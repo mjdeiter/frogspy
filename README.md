@@ -1,4 +1,5 @@
 # laz-bazaar-checker
+<img width="1152" height="896" alt="image" src="https://github.com/user-attachments/assets/0bf1fa5c-a109-448b-a9ef-4b52be0d1884" />
 
 A two-part bazaar price checking tool for the [Project Lazarus](https://www.lazaruseq.com/) EverQuest emulator server.
 
