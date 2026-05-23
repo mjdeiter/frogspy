@@ -1,5 +1,5 @@
 # laz-bazaar-checker
-<img width="1152" height="896" alt="image" src="https://github.com/user-attachments/assets/0bf1fa5c-a109-448b-a9ef-4b52be0d1884" />
+<img src="https://github.com/user-attachments/assets/0bf1fa5c-a109-448b-a9ef-4b52be0d1884" width="120" alt="FrogTracker logo" />
 
 A two-part bazaar price checking tool for the [Project Lazarus](https://www.lazaruseq.com/) EverQuest emulator server.
 
@@ -23,12 +23,11 @@ A two-part bazaar price checking tool for the [Project Lazarus](https://www.laza
 ### Step 1 — Export your trader inventory
 
 1. Log into your trader character and enter trader mode (`/trader`)
-2. Open the Bazaar Search Window (`/bazaar`) — it can be empty
-3. Run the Lua script:
+2. Run the Lua script — it opens the Bazaar Search Window automatically:
    ```
    /lua run export_trader
    ```
-4. This creates `kreigar_inventory.txt` on your Desktop in `ItemName|Price` format
+3. This creates `kreigar_inventory.txt` on your Desktop in `ItemName|Price` format
 
 ### Step 2 — Check prices against the market
 
@@ -65,7 +64,7 @@ Time elapsed        : 15.5s
 ## Important notes
 
 ### MQ2Bzsrch on Project Lazarus
-MQ2Bzsrch crashes the EQ client if it tries to trigger a bazaar search while the window is closed. The workaround is simple: **open `/bazaar` before running the script**. The script checks for this and will warn you if the window is not open.
+MQ2Bzsrch crashes the EQ client if it triggers a search while the Bazaar Search Window is closed. The Lua script handles this automatically — it opens the window and waits for it to be ready before searching. No manual setup required.
 
 MQ2Bzsrch is disabled by default in the Lazarus MQ build (`mq2bzsrch=0` in `MacroQuest.ini`). The export script loads it automatically at runtime — you do not need to enable it permanently.
 
