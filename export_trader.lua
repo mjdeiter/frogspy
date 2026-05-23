@@ -1,11 +1,11 @@
 -- export_trader.lua
 -- Run with: /lua run export_trader
--- Exports Kreigar's trader inventory to kreigar_inventory.txt for bazaar_checker.py
+-- Exports your trader inventory to a flat file for bazaar_checker.py
 --
 -- REQUIREMENTS:
 --   1. Be in the bazaar zone
---   2. Open the Bazaar Search Window (/bazaar) BEFORE running this script
---   3. MQ2Bzsrch will be loaded automatically if not already loaded
+--   2. Be in trader mode (/trader)
+--   MQ2Bzsrch and the Bazaar Search Window are handled automatically.
 
 local mq = require('mq')
 
@@ -30,11 +30,23 @@ if not pluginLoaded then
     printf('[ExportTrader] MQ2Bzsrch loaded.')
 end
 
--- Verify bazaar window is open (must be open for bzsrch to work on Lazarus)
+-- Auto-open the Bazaar Search Window if it is not already open.
+-- MQ2Bzsrch will crash the client if it fires a search with the window closed.
 if not mq.TLO.Window('BazaarSearchWnd').Open() then
-    printf('[ExportTrader] ERROR: Bazaar Search Window is not open!')
-    printf('[ExportTrader] Type /bazaar to open it, then re-run this script.')
-    return
+    printf('[ExportTrader] Opening Bazaar Search Window...')
+    mq.cmd('/bazaar')
+    local waitMs  = 0
+    local openTimeout = 5000
+    while not mq.TLO.Window('BazaarSearchWnd').Open() and waitMs < openTimeout do
+        mq.delay(100)
+        waitMs = waitMs + 100
+    end
+    if not mq.TLO.Window('BazaarSearchWnd').Open() then
+        printf('[ExportTrader] ERROR: Bazaar Search Window did not open after %ds. Aborting.', openTimeout / 1000)
+        return
+    end
+    printf('[ExportTrader] Bazaar Search Window open.')
+    mq.delay(250)  -- brief settle before searching
 end
 
 -- Reset any previous search results
@@ -46,17 +58,16 @@ printf('[ExportTrader] Searching bazaar for trader: %s...', TRADER_NAME)
 mq.cmdf('/bzsrch trader %s', TRADER_NAME)
 
 -- Wait for search to complete
-local timeout = 10000
+local searchTimeout = 10000
 local elapsed = 0
 local interval = 250
-while not mq.TLO.Bazaar.Done() and elapsed < timeout do
+while not mq.TLO.Bazaar.Done() and elapsed < searchTimeout do
     mq.delay(interval)
     elapsed = elapsed + interval
 end
 
 if not mq.TLO.Bazaar.Done() then
-    printf('[ExportTrader] ERROR: Search timed out after %ds.', timeout / 1000)
-    printf('[ExportTrader] Make sure the Bazaar Search Window is open and try again.')
+    printf('[ExportTrader] ERROR: Search timed out after %ds.', searchTimeout / 1000)
     return
 end
 
@@ -64,13 +75,13 @@ local count = mq.TLO.Bazaar.Count()
 printf('[ExportTrader] Search complete. Found %d item(s).', count)
 
 if count == 0 then
-    printf('[ExportTrader] No items found for %s. Are you in trader mode?', TRADER_NAME)
+    printf('[ExportTrader] No items found for %s. Are you in trader mode (/trader)?', TRADER_NAME)
     return
 end
 
--- Write results to file
--- MQ2Bzsrch Price is in copper (PGSC): 1 plat = 1000 copper
--- Round to nearest plat so prices like 1999cp -> 2pp not 1pp
+-- Write results to file.
+-- MQ2Bzsrch Price is in copper (PGSC): 1 plat = 1000 copper.
+-- Round to nearest plat so e.g. 1999cp -> 2pp.
 local file, err = io.open(OUTPUT_FILE, 'w')
 if not file then
     printf('[ExportTrader] ERROR: Could not open output file: %s', tostring(err))
@@ -79,12 +90,12 @@ end
 
 local exported = 0
 for i = 1, count do
-    local item = mq.TLO.Bazaar.Item(i)
+    local item  = mq.TLO.Bazaar.Item(i)
     local name  = item.Name()
-    local price = item.Price()  -- in copper
+    local price = item.Price()  -- copper
     if name and price then
-        local plat = math.floor((price + 500) / 1000)  -- round to nearest plat
-        if plat < 1 then plat = 1 end                  -- minimum 1pp
+        local plat = math.floor((price + 500) / 1000)
+        if plat < 1 then plat = 1 end
         file:write(string.format('%s|%d\n', name, plat))
         printf('[ExportTrader]   %-40s %d pp', name, plat)
         exported = exported + 1
