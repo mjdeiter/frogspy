@@ -7,7 +7,7 @@ A two-part bazaar price checking tool for the [Project Lazarus](https://www.laza
 - **`frogspy.lua`** — MacroQuest Lua script that exports your trader's inventory to a flat file using MQ2Bzsrch
 - **`frogspy.py`** — Python script with a full GUI and CLI; checks each item's price against live market data from [FrogTracker](https://frogtracker.biz). The FrogTracker API data layer (formerly `frogspy_scraper.py`) is included directly.
 - **`frogspy_display.py`** — Optional rich terminal output module used by the CLI mode
-- **`frogspy.bat`** — Double-click launcher; opens the GUI with no terminal window
+- **`frogspy.bat`** — Double-click launcher; opens the GUI with no terminal window. Self-contained — PNG assets are embedded and extracted automatically to `%TEMP%\frogspy\` on first run; no loose image files needed alongside it
 
 ## Requirements
 
@@ -17,7 +17,7 @@ A two-part bazaar price checking tool for the [Project Lazarus](https://www.laza
 
 ### Python (price checker)
 - Python 3.8+
-- `requests` library: `pip install requests`
+- `requests` and `pillow` libraries: `pip install -r requirements.txt`
 - `rich` library *(optional, for color CLI output)*: `pip install rich`
 
 ## Usage

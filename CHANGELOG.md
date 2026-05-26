@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] - 2026-05-25
+
+### Fixed
+- `frogspy.bat` — rewrote base64 embedding to use `(echo ...)>>tempfile` approach instead of env vars
+  - cmd.exe truncates env vars at 8,192 chars, silently corrupting the embedded PNG data
+  - PNGs are now written in 200-char echo chunks to `%TEMP%\frogspy\*.b64`, decoded via `certutil`, then deleted
+  - Bat is fully self-contained; no loose PNG files needed alongside it
+
 ## [1.5.0] - 2026-05-24
 
 ### Added
