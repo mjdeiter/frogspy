@@ -1,6 +1,6 @@
 # FrogSpy
 
-A two-part bazaar price checking tool for the [Project Lazarus](https://www.lazaruseq.com/) EverQuest emulator server, powered by [FrogTracker](https://frogtracker.biz).
+A [MacroQuest](https://www.macroquest.org/) Lua and Python bazaar price checking tool for the [Project Lazarus](https://www.lazaruseq.com/) EverQuest emulator server, powered by [FrogTracker](https://frogtracker.biz).
 
 ## Overview
 
