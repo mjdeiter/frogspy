@@ -2,6 +2,46 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - 2026-07-11
+
+### Changed — full rewrite: Python tool replaced with a pure in-game Lua app
+FrogSpy is no longer a two-step "export from game, then run a Python script" tool. The entire
+workflow now lives in-game as an ImGui control panel that drives BazaarWnd directly and talks to
+FrogTracker live.
+
+- **`frogspy.lua`** (renamed from `frogspy_ui.lua`, v0.7.0) — ImGui control panel / tick-loop
+  driver. Replaces the old `frogspy.lua` exporter entirely; run with `/lua run frogspy`.
+- **`frogspy_price_fsm.lua`** (v0.2.0, new) — companion state-machine module: BazaarWnd
+  automation (Window TLO + `/notify`), FrogTracker HTTP client, and the batch-audit engine.
+
+### Added (highlights carried over from the pre-1.0 Lua development history)
+- Live price-setting: type an item + Platinum/Gold/Silver/Copper amount and FrogSpy drives the
+  BazaarWnd controls to queue the update — no manual INI editing.
+- "Find Lowest Bazaar Price" and "Get FrogTracker Price" lookups to reference before committing
+  a price.
+- "Audit This Item" — single-item check, with a market-only fallback (`MARKET` status) for items
+  not currently sitting in a trader slot.
+- "Batch Audit Selected" — refresh the occupied-slot list, pick items via checklist, and audit
+  them all in one pass. Results are grouped (duplicate item/price rows collapse with a Count
+  column) and color-coded (red = undercut, green = cheapest/tied, gray = no competition,
+  blue = market-only).
+- Individually toggleable FrogTracker time windows (7-day / 30-day / 90-day / 1-year / lifetime),
+  with the results table's columns adapting to which are enabled.
+- Optional persistent audit log — appends a timestamped record (character, summary counts,
+  per-item detail) to `frogspy_audit_log.txt` in the MacroQuest config directory once per
+  finished audit.
+- Per-scan FrogTracker response cache (keyed by lowercased item name) so a batch audit with
+  duplicate item names doesn't re-query market data that can't have changed between two lookups
+  moments apart.
+- Window title includes the running version number at a glance.
+
+### Removed
+- `frogspy.py`, `frogspy_display.py`, `frogspy_scraper.py`, `frogspy.bat`, `requirements.txt` —
+  the Python GUI/CLI price checker and its self-extracting launcher. Fully superseded by the
+  live in-game tool; no external step needed anymore.
+- `frogspy_frog.png`, `frogspy_frog_icon.ico`, `frogspy_icon.ico`, `frogspy_lady.png`,
+  `frogspy_logo.png` — image assets used only by the retired Tkinter GUI/bat launcher.
+
 ## [1.5.1] - 2026-05-25
 
 ### Fixed
