@@ -21,6 +21,8 @@ As of v2.0.0, FrogSpy is a pure in-game Lua tool — no external Python step, no
 2. Run:
    ```
    /lua run frogspy
+   <img width="1382" height="570" alt="image" src="https://github.com/user-attachments/assets/49f5575a-37be-4f80-a558-0868a24e5453" />
+
    ```
 3. The control panel opens. From there you can:
    - **Set a price** — enter an item name (auto-fills from whatever's selected in BazaarWnd) and Platinum/Gold/Silver/Copper amounts, then queue the update — FrogSpy drives the BazaarWnd controls for you.
