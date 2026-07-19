@@ -1,9 +1,20 @@
--- frogspy_ui.lua
+-- frogspy.lua
 -- ImGui control panel / tick-loop driver for frogspy_price_fsm.lua.
--- Version: 0.7.0
+-- Version: 0.12.0
 -- Author: Alektra <Lederhosen>
 --
 -- CHANGELOG:
+-- v0.12.0 - Added auto-update check (same pattern as ItemPass.lua):
+--           fetches the raw script from GitHub on load, compares VERSION,
+--           and prints a console notice if a newer version is available.
+-- v0.11.0 - Fix: added ScrollX so wide results tables (8-18 columns) stop
+--           compressing/clipping column text instead of scrolling.
+-- v0.10.0 - Reverted SizingStretchSame; back to default auto-fit column
+--           sizing (the actual standard), Resizable still on top.
+-- v0.9.0  - Added SizingStretchSame so resizing a column takes space from
+--           its neighbor instead of just growing the table.
+-- v0.8.0  - Columns now resizable. Added a "Competitors" column - View
+--           button opens a per-seller auction breakdown sub-table.
 -- v0.7.0 - Batch Audit results table now collapses columns for disabled
 --          time windows instead of always showing all five (with "-" in
 --          the cells) as v0.6.0 did. colCount is computed right before
@@ -210,7 +221,15 @@ local mq = require('mq')
 local imgui = require('ImGui')
 local fsm = require('frogspy_price_fsm')
 
-local VERSION = '0.7.0'  -- keep in sync with the header comment above
+local VERSION = '0.12.0'  -- keep in sync with the header comment above
+
+-- v0.12.0: Update check - fetches the raw script from GitHub on load and
+-- notifies (console only) if a newer VERSION is found. Same approach as
+-- ItemPass.lua's checkForUpdate(): shells out to curl via io.popen rather
+-- than an in-process HTTP client, since MQNext Lua has no bundled http lib.
+-- NOTE: confirm this points at the real raw path for frogspy.lua before
+-- relying on it - update the repo/branch/file path below if it differs.
+local UPDATE_CHECK_URL = 'https://raw.githubusercontent.com/mjdeiter/frogspy/main/frogspy.lua'
 
 -- UI State Variables
 local openGUI = true
@@ -271,6 +290,14 @@ local LOG_FILE = mq.configDir .. '/frogspy_audit_log.txt'
 local logAuditsEnabled = false
 local batchWasRunning = false
 
+-- v0.8.0: which grouped Batch Audit result row (if any) is showing its
+-- per-competitor auction breakdown below the main results table. Holds a
+-- reference straight into groupedResults, so it stays in sync with that
+-- row's most recent data on every render frame without a separate copy;
+-- cleared on Close or whenever a new scan starts (batchResults reset
+-- means the old reference no longer matches anything real).
+local selectedAuditItem = nil
+
 -- v0.6.0: ordered list of the five frogtracker.biz time windows, driving
 -- both the toggle buttons and the results-table columns below. `key`
 -- matches fsm.getWindowConfig()'s table keys; `low`/`med` match the short
@@ -286,6 +313,36 @@ local WINDOWS = {
 
 local function totalCopper()
 return (inputPlat * 1000) + (inputGold * 100) + (inputSilver * 10) + inputCopper
+end
+
+-- v0.12.0: same auto-update-check pattern as ItemPass.lua's checkForUpdate().
+-- Shells out to curl (Windows-only, matches the MQNext/E3Next host env) to
+-- pull the raw script from GitHub, then regex-matches the VERSION string out
+-- of it and compares against the running VERSION. Console-only notification -
+-- doesn't touch the ImGui window or block script startup on failure.
+local function checkForUpdate()
+    print('\ay[FrogSpy] Checking for updates...\ax')
+    local ok, handle = pcall(io.popen,
+        'C:\\Windows\\System32\\curl.exe -s --connect-timeout 5 --max-time 8 "' .. UPDATE_CHECK_URL .. '" 2>nul')
+    if not ok or not handle then
+        print('\ar[FrogSpy] Update check failed (io.popen).\ax')
+        return
+    end
+    local body = handle:read('*a')
+    handle:close()
+    if not body or #body == 0 then
+        print('\ar[FrogSpy] Update check: no response from curl.\ax')
+        return
+    end
+    -- frogspy.lua declares VERSION with single quotes (local VERSION = '0.11.0'),
+    -- unlike ItemPass's double-quoted SCRIPT_VERSION - match either style.
+    local latest = body:match("VERSION%s*=%s*'([%d%.]+)'") or body:match('VERSION%s*=%s*"([%d%.]+)"')
+    if latest and latest ~= VERSION then
+        print('\ay[FrogSpy] Update available: v' .. latest .. ' (you have v' .. VERSION .. ')\ax')
+        print('\ay[FrogSpy] Get it at: https://github.com/mjdeiter/frogspy\ax')
+    else
+        print('\ag[FrogSpy] FrogSpy v' .. VERSION .. ' is up to date.\ax')
+    end
 end
 
 -- v0.4.4: formats a platinum value for display without a trailing ".0" on
@@ -317,7 +374,7 @@ if not v then return "-" end
             if not g then
                 g = {
                     name = r.name, yourPrice = r.yourPrice, status = r.status, error = r.error,
-                    lowest = r.lowest, gap = r.gap, rivals = r.rivals,
+                    lowest = r.lowest, gap = r.gap, rivals = r.rivals, rivalListings = r.rivalListings,
                     low7 = r.low7, med7 = r.med7, low30 = r.low30, med30 = r.med30,
                     low90 = r.low90, med90 = r.med90, low1y = r.low1y, med1y = r.med1y,
                     lowLife = r.lowLife, medLife = r.medLife,
@@ -770,11 +827,11 @@ for _, slot in ipairs(occupiedSlotsCache) do
 -- rather than sitting there full-width showing "-" as v0.6.0 did.
 local tableOk = pcall(function()
 local tableFlagsOk, tableFlags = pcall(function()
-return ImGuiTableFlags.Borders + ImGuiTableFlags.RowBg
+return ImGuiTableFlags.Borders + ImGuiTableFlags.RowBg + ImGuiTableFlags.Resizable + ImGuiTableFlags.ScrollX
 end)
 if not tableFlagsOk then tableFlags = 0 end
 
-    local colCount = 7
+    local colCount = 8
     for _, w in ipairs(WINDOWS) do
         if wcfg[w.key] then colCount = colCount + 2 end
         end
@@ -787,6 +844,7 @@ if not tableFlagsOk then tableFlags = 0 end
             imgui.TableSetupColumn("Lowest")
             imgui.TableSetupColumn("Gap")
             imgui.TableSetupColumn("Rivals")
+            imgui.TableSetupColumn("Competitors")
             for _, w in ipairs(WINDOWS) do
                 if wcfg[w.key] then
                     imgui.TableSetupColumn(w.label .. " Low")
@@ -795,7 +853,7 @@ if not tableFlagsOk then tableFlags = 0 end
                     end
                     imgui.TableHeadersRow()
 
-            for _, r in ipairs(groupedResults) do
+            for idx, r in ipairs(groupedResults) do
                 imgui.TableNextRow()
                 local rowColor = ImVec4(1, 1, 1, 1)
                 local statusLabel = "?"
@@ -822,14 +880,24 @@ if not tableFlagsOk then tableFlags = 0 end
                                     imgui.TableNextColumn(); imgui.TextColored(rowColor, fmtPrice(r.lowest))
                                     imgui.TableNextColumn(); imgui.TextColored(rowColor, r.gap and ("+" .. fmtPrice(r.gap)) or "-")
                                     imgui.TableNextColumn(); imgui.TextColored(rowColor, tostring(r.rivals or 0))
-                                    for _, w in ipairs(WINDOWS) do
-                                        if wcfg[w.key] then
-                                            imgui.TableNextColumn(); imgui.TextColored(rowColor, fmtPrice(r[w.low]))
-                                            imgui.TableNextColumn(); imgui.TextColored(rowColor, fmtPrice(r[w.med]))
-                                            end
-                                            end
-                                            end
-                                        imgui.EndTable()
+                                    imgui.TableNextColumn()
+                                    -- v0.8.0: opens the per-competitor auction
+                                    -- breakdown below the table for this row.
+                                    -- ##idx keeps the button ID unique per row
+                                    -- (item name alone can repeat across rows
+                                    -- when prices genuinely differ - same
+                                    -- reasoning as groupBatchResults()).
+                                    if imgui.Button("View##competitors" .. tostring(idx)) then
+                                        selectedAuditItem = r
+                                        end
+                                        for _, w in ipairs(WINDOWS) do
+                                            if wcfg[w.key] then
+                                                imgui.TableNextColumn(); imgui.TextColored(rowColor, fmtPrice(r[w.low]))
+                                                imgui.TableNextColumn(); imgui.TextColored(rowColor, fmtPrice(r[w.med]))
+                                                end
+                                                end
+                                                end
+                                            imgui.EndTable()
                                         end
                                         end)
 
@@ -857,7 +925,56 @@ if not tableOk then
                             end
                             end
 
-                            -- v0.5.0: update the transition tracker at the very end of the
+                            -- v0.8.0: renders the per-competitor auction breakdown for whichever
+-- row's "View" button was last clicked in the results table above.
+-- Independent of the table/fallback split above it - reads
+-- selectedAuditItem directly, so it still works even across a scan
+-- restart as long as the person hasn't clicked Close (matches the FSM
+-- always giving a real array back per the v0.2.1 changelog, so an empty
+-- table here means genuinely zero competitors, not a missing field).
+if selectedAuditItem then
+    imgui.Separator()
+    imgui.Text("Competitor Auctions - " .. selectedAuditItem.name)
+    imgui.SameLine()
+    if imgui.Button("Close##competitors") then
+        selectedAuditItem = nil
+    end
+end
+
+if selectedAuditItem then
+    local rivalListings = selectedAuditItem.rivalListings or {}
+    if #rivalListings == 0 then
+        imgui.Text("No competitor auctions found for this item.")
+    else
+        local detailOk = pcall(function()
+            local detailFlagsOk, detailFlags = pcall(function()
+                return ImGuiTableFlags.Borders + ImGuiTableFlags.RowBg + ImGuiTableFlags.Resizable + ImGuiTableFlags.ScrollX
+            end)
+            if not detailFlagsOk then detailFlags = 0 end
+
+            if imgui.BeginTable("CompetitorAuctions", 2, detailFlags) then
+                imgui.TableSetupColumn("Seller")
+                imgui.TableSetupColumn("Price")
+                imgui.TableHeadersRow()
+                for _, listing in ipairs(rivalListings) do
+                    imgui.TableNextRow()
+                    imgui.TableNextColumn(); imgui.Text(listing.sellerName)
+                    imgui.TableNextColumn(); imgui.Text(fmtPrice(listing.price))
+                end
+                imgui.EndTable()
+            end
+        end)
+        if not detailOk then
+            -- Same defensive fallback spirit as the main results table -
+            -- plain-text rows if BeginTable misbehaves here too.
+            for _, listing in ipairs(rivalListings) do
+                imgui.Text(string.format("%s - %s", listing.sellerName, fmtPrice(listing.price)))
+            end
+        end
+    end
+end
+
+-- v0.5.0: update the transition tracker at the very end of the
                             -- Batch Audit section, after both the running-state UI branch and
                             -- the completion-detection log write above have already used this
                             -- frame's scanRunningNow value.
@@ -873,6 +990,9 @@ if not tableOk then
 
                                 -- Bind the ImGui render loop
                                 mq.imgui.init('FrogspyUI', renderGUI)
+
+                                -- v0.12.0: one-shot update check on load (same timing as ItemPass.lua)
+                                checkForUpdate()
 
                                 -- Main execution loop
                                 while openGUI do

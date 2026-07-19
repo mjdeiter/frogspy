@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.0] - 2026-07-19
+
+### Added
+- Competitor auction drill-down - each Batch Audit results row now has a "View" button
+  (frogspy.lua v0.8.0) that opens a per-seller auction breakdown sub-table below the main
+  results, backed by frogspy_price_fsm.lua v0.2.1's new competitorListings() (returns full
+  {price, sellerName} arrays instead of just an aggregate lowest price and count).
+- Auto-update check (frogspy.lua v0.12.0) - on load, fetches the raw script from GitHub via
+  curl, compares its VERSION against the running one, and prints a console notice if a newer
+  release is available. Console-only; never blocks startup or touches the ImGui window.
+
+### Changed
+- Results table columns are now resizable (ImGuiTableFlags.Resizable) and the table scrolls
+  horizontally instead of compressing/clipping column text on wide layouts with several time
+  windows enabled (ImGuiTableFlags.ScrollX, v0.11.0).
+
 ## [2.0.0] - 2026-07-11
 
 ### Changed — full rewrite: Python tool replaced with a pure in-game Lua app

@@ -2,10 +2,12 @@
 -- Frogspy companion module – live Bazaar trader price-setting via BazaarWnd
 -- automation (Window TLO + /notify), so you don't have to camp out to edit
 -- the INI by hand.
--- Version: 0.2.0
+-- Version: 0.2.1
 -- Author: Alektra <Lederhosen>
 --
 -- CHANGELOG:
+-- v0.2.1 - Added `competitorListings`. `classify()` and cache now return full
+--          {price, sellerName} arrays instead of aggregates.
 -- v0.2.0 - Two features matching frogspy_ui.lua v0.6.0's new UI (which was
 --          already written against this API and crashing on the old
 --          v0.1.22 - see M.getWindowConfig() traceback):
@@ -682,6 +684,21 @@ local function competitorPrices(listings, traderName)
     return prices
 end
 
+-- v0.2.1: same filtering as competitorPrices() above but keeps the seller
+-- name alongside each price instead of stripping it, sorted ascending
+-- (cheapest first) - lets the UI show the actual list of competitor
+-- auctions for an item, not just an aggregate lowest price and count.
+local function competitorListings(listings, traderName)
+    local out = {}
+    for _, l in ipairs(listings) do
+        if l.sellerName ~= traderName then
+            table.insert(out, { price = l.price, sellerName = l.sellerName })
+        end
+    end
+    table.sort(out, function(a, b) return a.price < b.price end)
+    return out
+end
+
 local function windowReady()
     local w = mq.TLO.Window(WND.window)
     return w.Open() and w.Child(WND.clearBtn).Open()
@@ -1284,7 +1301,12 @@ local function tickFSM()
 
         -- v0.2.0: shared classification, keyed off whether this entry has
         -- a real trader slot (row) or is a market-only lookup.
-        local function classify(rivals)
+        -- v0.2.1: takes rivalListings (seller+price pairs) alongside the
+        -- bare rivals price array, and always sets result.rivalListings
+        -- so the UI has a real array (possibly empty) to render on every
+        -- path, never nil.
+        local function classify(rivals, rivalListings)
+            result.rivalListings = rivalListings or {}
             if not entry.row then
                 result.status = BATCH_STATUS_MARKET
                 result.lowest = (#rivals > 0) and rivals[1] or nil
@@ -1305,13 +1327,14 @@ local function tickFSM()
                 batchIndex, #batchQueue, entry.name, tostring(entry.row)))
             if cached.error then
                 result.status, result.lowest, result.rivals, result.error = BATCH_STATUS_NONE, nil, 0, true
+                result.rivalListings = {}
             else
                 result.low7, result.med7 = cached.low7, cached.med7
                 result.low30, result.med30 = cached.low30, cached.med30
                 result.low90, result.med90 = cached.low90, cached.med90
                 result.low1y, result.med1y = cached.low1y, cached.med1y
                 result.lowLife, result.medLife = cached.lowLife, cached.medLife
-                classify(cached.rivals)
+                classify(cached.rivals, cached.rivalListings)
             end
             table.insert(batchResults, result)
             setState('BATCH_DELAY', true)
@@ -1334,6 +1357,7 @@ local function tickFSM()
             warn(string.format('BATCH_REQUEST: could not load ssl.https for "%s" - skipping', entry.name))
             result.status = BATCH_STATUS_NONE
             result.lowest, result.rivals, result.error = nil, 0, true
+            result.rivalListings = {}
             ftCache[cacheKey] = { error = true }
         else
             local url = 'https://frogtracker.biz/Home/ItemHistory?itemName=' .. urlEncode(entry.name)
@@ -1342,28 +1366,31 @@ local function tickFSM()
                 warn(string.format('BATCH_REQUEST: request failed for "%s"', entry.name))
                 result.status = BATCH_STATUS_NONE
                 result.lowest, result.rivals, result.error = nil, 0, true
+                result.rivalListings = {}
                 ftCache[cacheKey] = { error = true }
             else
                 local listings = extractActiveListings(body)
                 local rivals = competitorPrices(listings, TRADER_NAME)
+                local rivalListings = competitorListings(listings, TRADER_NAME)
                 local wf = extractWindowFields(body)
-                
+
                 result.low7, result.med7 = wf.low7, wf.med7
                 result.low30, result.med30 = wf.low30, wf.med30
                 result.low90, result.med90 = wf.low90, wf.med90
                 result.low1y, result.med1y = wf.low1y, wf.med1y
                 result.lowLife, result.medLife = wf.lowLife, wf.medLife
-                
+
                 ftCache[cacheKey] = {
                     rivals = rivals,
+                    rivalListings = rivalListings,
                     low7 = result.low7, med7 = result.med7,
                     low30 = result.low30, med30 = result.med30,
                     low90 = result.low90, med90 = result.med90,
                     low1y = result.low1y, med1y = result.med1y,
                     lowLife = result.lowLife, medLife = result.medLife,
                 }
-                
-                classify(rivals)
+
+                classify(rivals, rivalListings)
             end
         end
 
