@@ -15,208 +15,35 @@
 --           its neighbor instead of just growing the table.
 -- v0.8.0  - Columns now resizable. Added a "Competitors" column - View
 --           button opens a per-seller auction breakdown sub-table.
--- v0.7.0 - Batch Audit results table now collapses columns for disabled
---          time windows instead of always showing all five (with "-" in
---          the cells) as v0.6.0 did. colCount is computed right before
---          BeginTable from the current fsm.getWindowConfig() state (7
---          base columns + 2 per enabled window), and both
---          TableSetupColumn and the per-row TableNextColumn/TextColored
---          calls are gated behind the same per-window enabled check. A
---          window toggle button click is a real width change now, not
---          just a content change - the table reclaims the horizontal
---          space instead of showing dead "-" columns. Plain-text
---          fallback and writeAuditLog() are unchanged - they're not
---          fixed-column layouts, so there's no shape to collapse.
--- v0.6.0 - Two features, both on the audit system:
---          (1) "Audit This Item" (and Batch Audit Selected, since they
---              share the same BATCH_* machinery FSM-side) no longer
---              requires the item to be sitting in a trader slot.
---              fsm.auditSingleItem() now falls back to a market-only
---              lookup when the typed name isn't found on the trader -
---              same frogtracker.biz data, just no "your price" to
---              compare it against, so those rows show a new MARKET
---              status (gray/blue, distinct from the existing
---              cheapest/undercut/no-comp. colors) instead of failing
---              with "not found in a trader slot". No UI change needed to
---              trigger this - it's automatic on the existing button.
---          (2) Time-window controls: frogtracker.biz's five history
---              windows (7-day/30-day/90-day/1-year/all-time) are now
---              shown as their own columns in the results table (below,
---              renamed from "7d Low"/"7d Med" to the fuller set) and can
---              individually be pulled or ignored via five new toggle
---              buttons ("7d: ON/OFF" etc.) next to the audit-logging
---              toggle. Reads/writes fsm.getWindowConfig()/
---              fsm.setWindowEnabled() - the FSM module owns this config,
---              not the UI, so it persists across Refresh List calls and
---              applies uniformly to both Audit This Item and Batch Audit
---              Selected. A disabled window just shows "-" in its columns
---              (table stays a fixed column count either way - toggling
---              only changes what gets fetched/displayed, not the table
---              shape, which keeps the already-cautious BeginTable code
---              from v0.4.3 unchanged in structure).
--- v0.5.0 - NEW FEATURE: optional persistent audit log, closing the one
---          real gap versus the Python frogspy repo (its frogspy_output.txt
---          report had no Lua equivalent - results only ever lived in the
---          ImGui table while the panel was open). "Audit Logging: OFF/ON"
---          toggle button next to Batch Audit (off by default; hover shows
---          the log file path as a tooltip). When on, writeAuditLog()
---          appends one timestamped entry - character name, summary
---          counts, and the same grouped per-item rows the results table
---          shows - to mq.configDir .. '/frogspy_audit_log.txt' exactly
---          once per finished audit (detected via a running->not-running
---          transition check, batchWasRunning vs. the newly-hoisted
---          scanRunningNow, so it fires once rather than every frame the
---          finished results sit on screen). Covers both Batch Audit
---          Selected and Audit This Item since they share the same
---          BATCH_* FSM state machine. Also fixed a stale v0.4.6-era
---          comment above slotSelected that still said new rows "default
---          to selected" - that changed to unchecked back in v0.4.9.
--- v0.4.9 - Two changes after the v0.4.8 live test confirmed the Button
---          toggle checklist works:
---          (1) BUG FIX: the window title still showed "0.4.7" even
---              though the header comment said 0.4.8 - there's a
---              separate `local VERSION` constant (added back in v0.2.2
---              specifically so the title bar shows the running version)
---              that the v0.4.8 edit missed bumping. Now kept in sync.
---          (2) BEHAVIOR CHANGE, requested after live test: Refresh List
---              used to default every occupied slot to checked, so
---              Batch Audit Selected ran the whole inventory unless you
---              manually unchecked items - same effective behavior as
---              the old always-whole-inventory Batch Audit Trader button
---              it replaced. Now Refresh List defaults everything
---              UNCHECKED, so you pick what runs instead of opting out
---              of items you don't want audited. Select All/Unselect All
---              are unchanged.
--- v0.4.8 - BUG FIX, reported live: v0.4.7's checkboxCompat() shim (which
---          guessed between a (changed, newValue) return and a
---          single-return fallback) still let checking an item revert to
---          unchecked immediately. Rather than guess a third
---          imgui.Checkbox return signature, the checklist no longer uses
---          Checkbox at all - it's now a Button per row with a [X]/[ ]
---          marker baked into the label, toggling slotSelected in Lua on
---          click. Button's return (true only on the click frame) is
---          already proven correct everywhere else in this file, so this
---          removes the last untested-signature risk from the checklist.
--- v0.4.7 - BUG FIX, reported live: checking an item in the v0.4.6
---          checklist immediately unchecked itself. Root cause: assumed
---          imgui.Checkbox returns (changed, newValue) like the standard
---          Dear ImGui Lua binding convention - if this binding actually
---          only returns the new value as a single result, Lua fills the
---          second local with nil, and "if changed then slotSelected[row]
---          = newVal end" was overwriting a real `true` with `nil` right
---          after you set it (nil then reads as unchecked next frame).
---          Added checkboxCompat() which detects which signature is
---          actually in play (second return nil vs. boolean) and handles
---          either correctly.
---          ALSO: added a "Visible rows" +/- stepper (Button-based, not an
---          untested InputInt/SliderInt) so the checklist's scroll region
---          height is adjustable instead of a fixed 150px - requested
---          alongside the checkbox fix.
--- v0.4.6 - NEW FEATURE, UNTESTED, requested after the v0.1.21 live test:
---          (1) Item selection checklist for Batch Audit - Refresh List /
---              Select All / Unselect All buttons plus a scrollable
---              per-slot checkbox list (Checkbox/BeginChild usage is
---              untested against the live binding, so pcall-wrapped with a
---              non-scrolling fallback, same caution as the results table
---              in v0.4.3). "Batch Audit Trader" (always whole inventory)
---              replaced with "Batch Audit Selected" (only checked items -
---              defaults to everything selected on Refresh, so the old
---              behavior still works out of the box).
---          (2) groupBatchResults() collapses duplicate (item name, your
---              price) rows into one with a Count column, instead of
---              listing e.g. 14 identical "Celestial Blessing of the
---              Djinn" rows. Only splits back into separate rows when the
---              price genuinely differs between slots for the same item.
--- v0.4.5 - NEW FEATURE, UNTESTED: "Audit This Item" button next to Batch
---          Audit Trader - calls fsm.auditSingleItem(inputItemName), the
---          same undercut/cheapest check as the full scan but for just the
---          typed item, so a single item doesn't require running the whole
---          inventory. No new UI plumbing needed for the result - it fills
---          the same results table below (with one row) since
---          auditSingleItem() shares the full scan's batch machinery
---          FSM-side.
--- v0.4.4 - Companion to frogspy_price_fsm.lua v0.1.20's units bug fix:
---          yourPrice/lowest/gap in the Batch Audit table are now
---          platinum-equivalent floats instead of integers, so raw
---          tostring() would show a trailing ".0" on whole-plat prices.
---          Added fmtPrice() and applied it to those three columns (and
---          the plain-text fallback row) - whole numbers display clean,
---          fractional plat (gold/silver/copper folded in) shows up to 3
---          decimal places.
--- v0.4.3 - NEW FEATURE, UNTESTED: "Batch Audit Trader" button - calls
---          fsm.startBatchScan() to scan every occupied trader slot and
---          shows a color-coded results table (red=undercut, green=
---          cheapest, gray=no competition) with a live progress indicator
---          while scanning. Porting frogspy.py's whole-inventory report -
---          see frogspy_price_fsm.lua v0.1.19's changelog for the full
---          design story (JSON decoder turned out unnecessary; own-price
---          read confirmed live via BZW_Money0-3.Text()). The results
---          table itself is the one genuinely untested piece here - no
---          prior imgui.BeginTable usage anywhere in this file to confirm
---          the exact API surface against, so it's wrapped in a pcall with
---          a plain-text fallback if the table API doesn't behave as
---          expected. Expect a scan to take roughly 1-2s per item with
---          visible hitches, not be instant.
--- v0.4.2 - NEW FEATURE, CONFIRMED WORKING (live test 2026-07-10): "Get
---          FrogTracker Price" button - calls
---          fsm.requestFrogTrackerPrice() (Feature 2) and fills PP from the
---          30-day median once the (async) lookup completes, mirroring
---          Find Lowest Bazaar Price's "review before committing" UX -
---          doesn't auto-queue. Also prints the 7-day/90-day/1-year/
---          lifetime lowest+median windows to console for context. Values
---          are already pure platinum from frogtracker.biz, so no
---          denomination math - GP/SP/CP always zeroed. NOTE: this button
---          blocks the game for the HTTP round-trip duration (~tens of ms
---          to ~1s observed) - see frogspy_price_fsm.lua v0.1.18's
---          FT_REQUEST comment for why.
--- v0.4.1 - Belt-and-suspenders: guard against inputItemName being nil (not
---          just empty string) before calling fsm.requestLowestPrice() - a
---          live crash traced to that function receiving nil somewhere.
---          Real fix is in frogspy_price_fsm.lua v0.1.11, this is just
---          defense in depth on the calling side too.
--- v0.4.0 - NEW FEATURE, UNTESTED: "Find Lowest Bazaar Price" button - calls
---          fsm.requestLowestPrice() and fills PP/GP/SP/CP from the result
---          once the (async) search completes, for review before queueing -
---          doesn't auto-commit. See frogspy_price_fsm.lua v0.1.10's
---          changelog for the real caveats here (untested SetText() call,
---          guessed 2s search-wait, unverified BazaarSearchWnd/trader-mode
---          interaction).
--- v0.3.0 - Item Name now auto-fills from whatever's currently selected in
---          BazaarWnd (polls fsm.getSelectedSlot() ~4x/sec), so clicking an
---          item in the trader window populates the field instead of
---          needing it typed by hand. Doesn't clear the field on deselect,
---          and won't clobber manual typing for a different item unless the
---          in-game selection actually changes to something new. Also
---          resets the tracked selection after a successful queue, so
---          re-pricing the same still-selected item again re-fills the name
---          instead of leaving it blank.
--- v0.2.2 - Window title now includes the version number ("Frogspy Trader
---          Controller v0.2.2"), per standing convention going forward: all
---          of Matt's ImGui window titles should show their running version,
---          so it's visible at a glance which build is actually loaded
---          without needing to check file dates or diff source. (This
---          matters in practice - see the v0.1.6/v0.1.7 sessions where a
---          stale cached require() kept running old code silently.)
--- v0.2.1 - "Queue Price Update" did nothing (no error, no log line) when
---          Item Name was left blank - looked identical to the button being
---          broken. Added an explicit console warning in that case so a
---          blank-name click is now visibly different from a real failure.
--- v0.2.0 - Replaced the single "Total Copper" InputInt with four separate
---          Platinum/Gold/Silver/Copper fields, matching how EQ players
---          actually think about prices (and how BazaarWnd itself displays
---          them) instead of requiring a manual pp -> cp conversion in your
---          head. Concretely: typing "50" meaning 1000pp into a field
---          labeled "Total Copper" priced an item at 50 copper instead of
---          1,000,000 - this removes that failure mode entirely. The coin
---          split math itself (in frogspy_price_fsm.lua) was already
---          correct; only this input layer was wrong.
--- v0.1.x - (untracked prior to this file getting its own version header -
---          see frogspy_price_fsm.lua's CHANGELOG for the shared history):
---          settext/keystroke injection fix, module-encapsulation fix
---          (fsm.getState()/fsm.reset() instead of reading fsm.state/
---          fsm.queue directly), enqueueByName instead of enqueue for the
---          item-name input field.
-
+-- v0.7.0  - Results table hides columns for disabled time windows instead
+--           of showing dead "-" cells.
+-- v0.6.0  - Audit This Item now falls back to a market-only lookup
+--           (MARKET status) if the item isn't on the trader. Added
+--           per-window (7d/30d/90d/1yr/life) toggles and columns.
+-- v0.5.0  - Added optional persistent audit log (Audit Logging ON/OFF),
+--           appends to frogspy_audit_log.txt after each batch audit.
+-- v0.4.9  - Fixed window title not showing the running version. New
+--           checklist rows default unchecked instead of checked.
+-- v0.4.8  - Swapped the unreliable Checkbox binding for a Button-based
+--           [X]/[ ] toggle in the item checklist.
+-- v0.4.7  - Fixed checklist checkboxes immediately reverting. Added a
+--           +/- visible-rows stepper.
+-- v0.4.6  - Added a selective item checklist (Refresh/Select/Unselect
+--           All) for Batch Audit. Duplicate rows now group with a Count.
+-- v0.4.5  - Added "Audit This Item" for a single-item undercut check.
+-- v0.4.4  - Added fmtPrice() to drop trailing ".0" on whole-plat prices.
+-- v0.4.3  - Added "Batch Audit Trader" - full-inventory scan with a
+--           color-coded results table.
+-- v0.4.2  - Added "Get FrogTracker Price" button (30-day median + other
+--           windows).
+-- v0.4.1  - Guard against a nil inputItemName crash.
+-- v0.4.0  - Added "Find Lowest Bazaar Price" button.
+-- v0.3.0  - Item Name auto-fills from the currently selected trader slot.
+-- v0.2.2  - Window title now shows the running version number.
+-- v0.2.1  - Warn on blank item name instead of failing silently.
+-- v0.2.0  - Split Total Copper into Platinum/Gold/Silver/Copper fields.
+-- v0.1.x  - Pre-versioning fixes: settext/keystroke injection, module
+--           encapsulation, enqueueByName.
 local mq = require('mq')
 local imgui = require('ImGui')
 local fsm = require('frogspy_price_fsm')
