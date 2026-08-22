@@ -1,9 +1,37 @@
 -- frogspy.lua
 -- ImGui control panel / tick-loop driver for frogspy_price_fsm.lua.
--- Version: 0.14.0
+-- Version: 0.15.0
 -- Author: Alektra <Lederhosen>
 --
 -- CHANGELOG:
+-- v0.15.0 - NEW FEATURE: auto-audit timer for the v0.14.0 watchlist,
+--           closing the gap that made target-price watches mostly
+--           pointless - without this, a watched item's price was only
+--           ever checked at the moment you happened to click Batch
+--           Audit or Audit This Item, so "notify me when it hits N
+--           plat" silently did nothing while away from the panel.
+--           New "Auto-Audit Watchlist: ON/OFF" toggle + "check every
+--           (min)" interval input below the watchlist. When on,
+--           renderGUI() periodically calls fsm.auditSingleItem() on
+--           the next watchlist entry (round-robin via
+--           autoAuditWatchIdx, one item per interval rather than the
+--           whole list at once - keeps this indistinguishable from a
+--           human occasionally clicking Audit This Item, and avoids
+--           hammering frogtracker.biz as the watchlist grows). Only
+--           triggers when the FSM is genuinely idle (reuses the same
+--           scanRunningNow read the rest of the frame already takes,
+--           never a second fsm.isBatchScanRunning() call, so this
+--           can't race a manual audit click in the same frame).
+--           Deliberately does NOT add a second alert-evaluation path -
+--           it only starts audits; the existing v0.14.0
+--           batchWasRunning/scanRunningNow transition hook (which
+--           already checks the watchlist after any finished audit,
+--           manual or auto-triggered) is what actually fires
+--           sendPriceAlert(). Interval stored internally in seconds
+--           (autoAuditIntervalSec) but shown/edited in whole minutes
+--           in the UI, floored at 1. Off by default; resets to
+--           defaults on script reload, same as everything else in
+--           this alert system.
 -- v0.14.0 - CORRECTION to v0.13.0: that release alerted on undercut GAP
 --           (yours vs. lowest rival, only on UNDERCUT rows), but what
 --           was actually wanted is a target-price watch - "tell me when
@@ -263,7 +291,7 @@ local mq = require('mq')
 local imgui = require('ImGui')
 local fsm = require('frogspy_price_fsm')
 
-local VERSION = '0.14.0'  -- keep in sync with the header comment above
+local VERSION = '0.15.0'  -- keep in sync with the header comment above
 
 -- v0.12.0: Update check - fetches the raw script from GitHub on load and
 -- notifies (console only) if a newer VERSION is found. Same approach as
@@ -365,6 +393,33 @@ local watchlist = {}
 local watchAlerted = {}
 local watchInputName = ""
 local watchInputTarget = 0
+
+-- v0.15.0: optional auto-audit timer, closing the actual gap the
+-- watchlist had until now - without this, a watched item's price is
+-- only ever checked at the moment you happen to click Batch Audit /
+-- Audit This Item, so "notify me when it hits target" silently did
+-- nothing while you were away from the panel. When autoAuditEnabled,
+-- renderGUI() below periodically calls fsm.auditSingleItem() on the
+-- NEXT watchlist entry (round-robin via autoAuditWatchIdx, one item
+-- per interval - not the whole watchlist at once, which would be
+-- indistinguishable from spamming Batch Audit and would hammer
+-- frogtracker.biz for no reason if the list grows). Reuses
+-- auditSingleItem() rather than the trader-slot batch machinery since
+-- watched items don't need to be on the trader - same MARKET-status
+-- fallback the "Audit This Item" button already relies on. Piggybacks
+-- on the EXISTING batchWasRunning/scanRunningNow transition-detection
+-- hook further down (the one that already checks the watchlist after
+-- any finished audit) rather than adding a second alert path - this
+-- timer's only job is to start audits, not evaluate them.
+-- autoAuditIntervalSec default of 300 (5 min) balances "actually
+-- useful while away" against not hammering frogtracker.biz - lowered
+-- via the UI's - button if you want tighter checks on a small
+-- watchlist. lastAutoAuditMs uses mq.gettime() same as the existing
+-- SCAN_INTERVAL_MS auto-fill poll above.
+local autoAuditEnabled = false
+local autoAuditIntervalSec = 300
+local lastAutoAuditMs = 0
+local autoAuditWatchIdx = 0
 
 -- v0.8.0: which grouped Batch Audit result row (if any) is showing its
 -- per-competitor auction breakdown below the main results table. Holds a
@@ -798,6 +853,35 @@ if imgui.Button(logLabel) then
                 end
             end
 
+            -- v0.15.0: auto-audit toggle + interval control. Without
+            -- this, alertsEnabled/watchlist only ever gets evaluated at
+            -- the moment you click Batch Audit/Audit This Item - see the
+            -- v0.15.0 note on the autoAuditEnabled locals above for why
+            -- that made the watchlist mostly pointless while away from
+            -- the panel. Interval is in whole minutes in the UI
+            -- (autoAuditIntervalSec stores seconds internally, matching
+            -- mq.gettime()'s millisecond convention elsewhere in this
+            -- file) - minMinutes floor of 1 keeps someone from
+            -- accidentally setting 0 and hammering frogtracker.biz every
+            -- frame.
+            local autoAuditLabel = autoAuditEnabled and "Auto-Audit Watchlist: ON" or "Auto-Audit Watchlist: OFF"
+            if imgui.Button(autoAuditLabel) then
+                autoAuditEnabled = not autoAuditEnabled
+                if autoAuditEnabled then
+                    -- Reset the timer on enable so it doesn't fire
+                    -- immediately using a stale lastAutoAuditMs from a
+                    -- much earlier session/toggle - first check happens
+                    -- one full interval from right now.
+                    lastAutoAuditMs = mq.gettime()
+                end
+            end
+            imgui.SameLine()
+            local autoAuditMinutes = math.floor(autoAuditIntervalSec / 60)
+            imgui.SetNextItemWidth(80)
+            autoAuditMinutes = imgui.InputInt("check every (min)", autoAuditMinutes)
+            if autoAuditMinutes < 1 then autoAuditMinutes = 1 end
+            autoAuditIntervalSec = autoAuditMinutes * 60
+
 
         -- v0.6.0: time-window toggles - which of frogtracker.biz's five
         -- history windows to pull/display. Read/write straight through to
@@ -914,6 +998,47 @@ for _, slot in ipairs(occupiedSlotsCache) do
             -- UI branch below and the completion-detection at the bottom of
             -- this section use the exact same read for a given frame.
             local scanRunningNow = fsm.isBatchScanRunning()
+
+            -- v0.15.0: auto-audit trigger. Only starts a new audit when
+            -- the FSM is genuinely idle (scanRunningNow false, same read
+            -- as everything else this frame - never re-checks
+            -- fsm.isBatchScanRunning() a second time here, so this can
+            -- never race against a manual Batch Audit/Audit This Item
+            -- click in the same frame) and the interval has elapsed.
+            -- Starting fsm.auditSingleItem() here does NOT flip
+            -- scanRunningNow for the REST of this frame (the FSM only
+            -- reports running on a later frame), so the existing
+            -- scanRunningNow-branch UI below (progress text vs. the
+            -- Batch Audit/Audit This Item buttons) renders correctly
+            -- either way this frame - it'll just show "Scanning..."
+            -- starting next frame, same as a manual click would.
+            -- Round-robins through watchlist via autoAuditWatchIdx
+            -- rather than auditing everything at once - one item per
+            -- interval keeps this from ever looking different to
+            -- frogtracker.biz than a human occasionally clicking Audit
+            -- This Item. Silently does nothing if watchlist is empty
+            -- (idx has nothing to point at) - no error, no console spam,
+            -- since an empty watchlist with the toggle left on isn't a
+            -- mistake worth interrupting anyone over.
+            if autoAuditEnabled and not scanRunningNow and #watchlist > 0 then
+                local nowMsAA = mq.gettime()
+                if nowMsAA - lastAutoAuditMs >= (autoAuditIntervalSec * 1000) then
+                    lastAutoAuditMs = nowMsAA
+                    autoAuditWatchIdx = autoAuditWatchIdx + 1
+                    if autoAuditWatchIdx > #watchlist then autoAuditWatchIdx = 1 end
+                    local target = watchlist[autoAuditWatchIdx]
+                    if target then
+                        -- v0.15.0: note that this replaces the visible
+                        -- results table with a single-item result (same
+                        -- as a manual "Audit This Item" click would) -
+                        -- printed so an unexpected table change while
+                        -- auto-audit is on reads as intentional, not a
+                        -- glitch.
+                        print('\ay[FrogSpy] Auto-audit checking watchlist item: ' .. target.name .. '\ax')
+                        fsm.auditSingleItem(target.name)
+                    end
+                end
+            end
 
             if scanRunningNow then
                 local cur, total = fsm.getBatchScanProgress()
