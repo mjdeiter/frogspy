@@ -1,9 +1,30 @@
 -- frogspy.lua
 -- ImGui control panel / tick-loop driver for frogspy_price_fsm.lua.
--- Version: 0.12.0
+-- Version: 0.13.0
 -- Author: Alektra <Lederhosen>
 --
 -- CHANGELOG:
+-- v0.13.0 - NEW FEATURE: optional ntfy.sh push alert on undercut items,
+--           closing the "how do I find out I got undercut without the
+--           panel open" gap. "Price Alerts: ON/OFF" toggle next to Audit
+--           Logging, plus a topic text input (ntfy.sh topic name - public/
+--           unauthenticated, pick something non-guessable) and a min-gap
+--           number input (plat). Fires on the same batch-finish
+--           running->not-running transition as writeAuditLog() (once per
+--           finished audit, not per frame), walks groupedResults, and
+--           sends one sendPriceAlert() notification per UNDERCUT row
+--           whose gap meets/exceeds the threshold - CHEAPEST/MARKET/no-
+--           comp./error rows don't qualify. sendPriceAlert() reuses
+--           checkForUpdate()'s proven io.popen + curl.exe pattern (same
+--           timeout guards, same pcall wrapper) rather than a new HTTP
+--           dependency - confirmed working in the MQNext Lua sandbox
+--           since that's exactly how the v0.12.0 update check already
+--           runs in production. Formats its own numbers inline (%.3f)
+--           rather than calling fmtPrice(), since fmtPrice is declared
+--           later in the file and isn't in scope yet at sendPriceAlert's
+--           declaration point. Off by default; resets to defaults on
+--           script reload, same as logAuditsEnabled (no settings-
+--           persistence layer exists in this file yet).
 -- v0.12.0 - Added auto-update check (same pattern as ItemPass.lua):
 --           fetches the raw script from GitHub on load, compares VERSION,
 --           and prints a console notice if a newer version is available.
@@ -221,7 +242,7 @@ local mq = require('mq')
 local imgui = require('ImGui')
 local fsm = require('frogspy_price_fsm')
 
-local VERSION = '0.12.0'  -- keep in sync with the header comment above
+local VERSION = '0.13.0'  -- keep in sync with the header comment above
 
 -- v0.12.0: Update check - fetches the raw script from GitHub on load and
 -- notifies (console only) if a newer VERSION is found. Same approach as
@@ -290,6 +311,19 @@ local LOG_FILE = mq.configDir .. '/frogspy_audit_log.txt'
 local logAuditsEnabled = false
 local batchWasRunning = false
 
+-- v0.13.0: optional ntfy.sh push alert, fired on the same batch-finish
+-- transition as writeAuditLog() above, when an audited item is UNDERCUT
+-- and the gap meets/exceeds alertThresholdPlat. Off by default - same
+-- opt-in convention as logAuditsEnabled. Topic is a free-text ntfy.sh
+-- topic name (public, unauthenticated - anyone who knows the topic can
+-- subscribe, so pick something non-guessable if it matters). These
+-- reset to defaults on script reload, matching existing behavior for
+-- logAuditsEnabled/checklistRows/etc. (no settings-persistence layer
+-- exists in this file yet).
+local alertsEnabled = false
+local alertTopic = ""
+local alertThresholdPlat = 1
+
 -- v0.8.0: which grouped Batch Audit result row (if any) is showing its
 -- per-competitor auction breakdown below the main results table. Holds a
 -- reference straight into groupedResults, so it stays in sync with that
@@ -343,6 +377,36 @@ local function checkForUpdate()
     else
         print('\ag[FrogSpy] FrogSpy v' .. VERSION .. ' is up to date.\ax')
     end
+end
+
+-- v0.13.0: fires an ntfy.sh push notification for a single UNDERCUT item
+-- that met/exceeded alertThresholdPlat, using the exact io.popen/curl.exe
+-- pattern checkForUpdate() above already proved works in the MQNext Lua
+-- sandbox (same timeout guards, same pcall wrapper, no new dependency).
+-- One process spawn per qualifying item - batch audits are already
+-- multi-second operations (settle + HTTP round-trip + throttle per item),
+-- so a few extra curl calls on the rare undercut don't meaningfully add
+-- to that. Silent no-op if alertsEnabled is off or alertTopic is blank,
+-- so callers don't need to guard on those themselves.
+local function sendPriceAlert(itemName, yourPrice, lowestPrice, gap)
+    if not alertsEnabled or not alertTopic or alertTopic == "" then return end
+    -- NOTE: formats inline with %.3f rather than calling fmtPrice() - that
+    -- helper is declared further down this file (after checkForUpdate),
+    -- and as a local it isn't in scope yet up here. Trailing zeros in the
+    -- notification body are a cosmetic tradeoff for not restructuring the
+    -- whole file's declaration order.
+    local msg = string.format('%s undercut by %.3f plat (yours: %.3f, lowest: %.3f)',
+        itemName, gap or 0, yourPrice or 0, lowestPrice or 0)
+    local cmd = string.format(
+        'C:\\Windows\\System32\\curl.exe -s --connect-timeout 5 --max-time 8 -d "%s" "https://ntfy.sh/%s" 2>nul',
+        msg, alertTopic)
+    local ok, handle = pcall(io.popen, cmd)
+    if not ok or not handle then
+        print('\ar[FrogSpy] Price alert failed (io.popen): ' .. itemName .. '\ax')
+        return
+    end
+    handle:close()
+    print('\ag[FrogSpy] Price alert sent: ' .. itemName .. '\ax')
 end
 
 -- v0.4.4: formats a platinum value for display without a trailing ".0" on
@@ -624,6 +688,23 @@ if imgui.Button(logLabel) then
         imgui.SetTooltip("Log file: " .. LOG_FILE)
         end
 
+        -- v0.13.0: price-alert toggle + topic/threshold inputs, same
+        -- Button on/off pattern as Audit Logging above. Kept as plain
+        -- text/number inputs rather than a settings panel since this file
+        -- has no persistence layer yet - matches how alertsEnabled itself
+        -- resets on script reload.
+        local alertLabel = alertsEnabled and "Price Alerts: ON" or "Price Alerts: OFF"
+        if imgui.Button(alertLabel) then
+            alertsEnabled = not alertsEnabled
+            end
+            imgui.SameLine()
+            imgui.SetNextItemWidth(140)
+            alertTopic = imgui.InputText("ntfy topic", alertTopic)
+            imgui.SameLine()
+            imgui.SetNextItemWidth(80)
+            alertThresholdPlat = imgui.InputInt("min gap (plat)", alertThresholdPlat)
+            if alertThresholdPlat < 0 then alertThresholdPlat = 0 end
+
         -- v0.6.0: time-window toggles - which of frogtracker.biz's five
         -- history windows to pull/display. Read/write straight through to
         -- fsm.getWindowConfig()/fsm.setWindowEnabled() rather than keeping
@@ -808,6 +889,20 @@ for _, slot in ipairs(occupiedSlotsCache) do
                                                                                                 if logAuditsEnabled and batchWasRunning and not scanRunningNow then
                                                                                                     writeAuditLog(groupedResults, cheapestCount, undercutCount, noneCount, marketCount, errorCount)
                                                                                                     end
+
+                                                                                                    -- v0.13.0: same batch-finish transition as the audit log write
+                                                                                                    -- above (fires exactly once per completed audit). Walks the
+                                                                                                    -- grouped results and fires one ntfy alert per UNDERCUT item
+                                                                                                    -- whose gap meets/exceeds alertThresholdPlat - CHEAPEST/MARKET/
+                                                                                                    -- no-competition/error rows don't qualify, only genuine
+                                                                                                    -- undercuts are actionable here.
+                                                                                                    if alertsEnabled and batchWasRunning and not scanRunningNow then
+                                                                                                        for _, r in ipairs(groupedResults) do
+                                                                                                            if r.status == "undercut" and r.gap and r.gap >= alertThresholdPlat then
+                                                                                                                sendPriceAlert(r.name, r.yourPrice, r.lowest, r.gap)
+                                                                                                                end
+                                                                                                                end
+                                                                                                                end
 
                                                                                                     -- v0.4.3: table rendering is untested against the live ImGui
                                                                                                     -- binding (no prior table usage anywhere in this file to
