@@ -1,9 +1,30 @@
 -- frogspy.lua
 -- ImGui control panel / tick-loop driver for frogspy_price_fsm.lua.
--- Version: 0.13.0
+-- Version: 0.14.0
 -- Author: Alektra <Lederhosen>
 --
 -- CHANGELOG:
+-- v0.14.0 - CORRECTION to v0.13.0: that release alerted on undercut GAP
+--           (yours vs. lowest rival, only on UNDERCUT rows), but what
+--           was actually wanted is a target-price watch - "tell me when
+--           this item's market price reaches N plat" - which doesn't
+--           require the item to be undercut, or even sitting in a
+--           trader slot (MARKET-status rows qualify too, same as
+--           CHEAPEST/UNDERCUT, since all three have a real r.lowest).
+--           Replaced the single alertThresholdPlat gap field with a
+--           watchlist: separate "watch item" name + "target plat"
+--           inputs plus an Add Watch button, rendering the current
+--           watchlist below with per-entry Remove buttons. Same
+--           batch-finish hook point as before (and as writeAuditLog()),
+--           but now looks up each watched item by name in
+--           groupedResults and fires sendPriceAlert() when
+--           r.lowest <= target. watchAlerted[name] gates each watch to
+--           firing once per drop-below-target rather than every
+--           finished audit while the price stays low, and re-arms
+--           (clears) if the price rises back above target. ntfy topic
+--           input, alertsEnabled toggle, and sendPriceAlert()'s
+--           io.popen/curl.exe transport are otherwise unchanged from
+--           v0.13.0.
 -- v0.13.0 - NEW FEATURE: optional ntfy.sh push alert on undercut items,
 --           closing the "how do I find out I got undercut without the
 --           panel open" gap. "Price Alerts: ON/OFF" toggle next to Audit
@@ -242,7 +263,7 @@ local mq = require('mq')
 local imgui = require('ImGui')
 local fsm = require('frogspy_price_fsm')
 
-local VERSION = '0.13.0'  -- keep in sync with the header comment above
+local VERSION = '0.14.0'  -- keep in sync with the header comment above
 
 -- v0.12.0: Update check - fetches the raw script from GitHub on load and
 -- notifies (console only) if a newer VERSION is found. Same approach as
@@ -311,18 +332,39 @@ local LOG_FILE = mq.configDir .. '/frogspy_audit_log.txt'
 local logAuditsEnabled = false
 local batchWasRunning = false
 
--- v0.13.0: optional ntfy.sh push alert, fired on the same batch-finish
--- transition as writeAuditLog() above, when an audited item is UNDERCUT
--- and the gap meets/exceeds alertThresholdPlat. Off by default - same
--- opt-in convention as logAuditsEnabled. Topic is a free-text ntfy.sh
--- topic name (public, unauthenticated - anyone who knows the topic can
--- subscribe, so pick something non-guessable if it matters). These
--- reset to defaults on script reload, matching existing behavior for
--- logAuditsEnabled/checklistRows/etc. (no settings-persistence layer
--- exists in this file yet).
+-- v0.14.0: optional ntfy.sh push alert on a target-price WATCHLIST,
+-- fired on the same batch-finish transition as writeAuditLog() above.
+-- Replaces v0.13.0's undercut-gap alert (kept firing on the wrong
+-- condition for what was actually wanted - "tell me when this item's
+-- market price reaches N plat" is a target-price watch against
+-- r.lowest, not a your-price-vs-competitor gap check, and doesn't
+-- require the item to be UNDERCUT or even sitting in a trader slot at
+-- all - MARKET-status rows have a r.lowest same as any other). Off by
+-- default - same opt-in convention as logAuditsEnabled. Topic is a
+-- free-text ntfy.sh topic name (public, unauthenticated - anyone who
+-- knows the topic can subscribe, so pick something non-guessable if it
+-- matters), shared across every watched item rather than per-item,
+-- since one ntfy subscription covering all your price watches is the
+-- simplest setup.
+--
+-- watchlist is an ordered array of {name=, target=} entries (order
+-- preserved for stable UI row rendering, unlike a name-keyed table
+-- which would reorder under hash iteration). watchInputName/
+-- watchInputTarget are separate from inputItemName/inputPlat (the
+-- Queue Price Update fields above) - reusing those would mean typing an
+-- item name there always both stages a price update AND edits the
+-- watchlist entry, which is two unrelated actions sharing one field by
+-- accident. Alerted entries are tracked in watchAlerted (keyed by
+-- name) so a given watch only fires once per session instead of
+-- re-notifying on every subsequent audit while the price stays at or
+-- below target - cleared (per-entry) if the price rises back above
+-- target, so a later re-drop notifies again.
 local alertsEnabled = false
 local alertTopic = ""
-local alertThresholdPlat = 1
+local watchlist = {}
+local watchAlerted = {}
+local watchInputName = ""
+local watchInputTarget = 0
 
 -- v0.8.0: which grouped Batch Audit result row (if any) is showing its
 -- per-competitor auction breakdown below the main results table. Holds a
@@ -379,24 +421,25 @@ local function checkForUpdate()
     end
 end
 
--- v0.13.0: fires an ntfy.sh push notification for a single UNDERCUT item
--- that met/exceeded alertThresholdPlat, using the exact io.popen/curl.exe
--- pattern checkForUpdate() above already proved works in the MQNext Lua
--- sandbox (same timeout guards, same pcall wrapper, no new dependency).
--- One process spawn per qualifying item - batch audits are already
--- multi-second operations (settle + HTTP round-trip + throttle per item),
--- so a few extra curl calls on the rare undercut don't meaningfully add
--- to that. Silent no-op if alertsEnabled is off or alertTopic is blank,
--- so callers don't need to guard on those themselves.
-local function sendPriceAlert(itemName, yourPrice, lowestPrice, gap)
+-- v0.14.0: fires an ntfy.sh push notification for a single watchlist
+-- item whose market lowest has reached/dropped below its target price,
+-- using the exact io.popen/curl.exe pattern checkForUpdate() above
+-- already proved works in the MQNext Lua sandbox (same timeout guards,
+-- same pcall wrapper, no new dependency). One process spawn per
+-- qualifying item - batch audits are already multi-second operations
+-- (settle + HTTP round-trip + throttle per item), so a few extra curl
+-- calls on a rare price-target hit don't meaningfully add to that.
+-- Silent no-op if alertsEnabled is off or alertTopic is blank, so
+-- callers don't need to guard on those themselves.
+local function sendPriceAlert(itemName, lowestPrice, targetPrice)
     if not alertsEnabled or not alertTopic or alertTopic == "" then return end
     -- NOTE: formats inline with %.3f rather than calling fmtPrice() - that
     -- helper is declared further down this file (after checkForUpdate),
     -- and as a local it isn't in scope yet up here. Trailing zeros in the
     -- notification body are a cosmetic tradeoff for not restructuring the
     -- whole file's declaration order.
-    local msg = string.format('%s undercut by %.3f plat (yours: %.3f, lowest: %.3f)',
-        itemName, gap or 0, yourPrice or 0, lowestPrice or 0)
+    local msg = string.format('%s hit target: %.3f plat (target was %.3f)',
+        itemName, lowestPrice or 0, targetPrice or 0)
     local cmd = string.format(
         'C:\\Windows\\System32\\curl.exe -s --connect-timeout 5 --max-time 8 -d "%s" "https://ntfy.sh/%s" 2>nul',
         msg, alertTopic)
@@ -688,11 +731,12 @@ if imgui.Button(logLabel) then
         imgui.SetTooltip("Log file: " .. LOG_FILE)
         end
 
-        -- v0.13.0: price-alert toggle + topic/threshold inputs, same
-        -- Button on/off pattern as Audit Logging above. Kept as plain
-        -- text/number inputs rather than a settings panel since this file
-        -- has no persistence layer yet - matches how alertsEnabled itself
-        -- resets on script reload.
+        -- v0.14.0: price-alert toggle + ntfy topic input + target-price
+        -- watchlist, same Button on/off pattern as Audit Logging above.
+        -- Kept as plain text/number inputs rather than a settings panel
+        -- since this file has no persistence layer yet - matches how
+        -- alertsEnabled itself resets on script reload (the watchlist
+        -- itself resets too - re-add watches after a /lua stop+run).
         local alertLabel = alertsEnabled and "Price Alerts: ON" or "Price Alerts: OFF"
         if imgui.Button(alertLabel) then
             alertsEnabled = not alertsEnabled
@@ -700,10 +744,60 @@ if imgui.Button(logLabel) then
             imgui.SameLine()
             imgui.SetNextItemWidth(140)
             alertTopic = imgui.InputText("ntfy topic", alertTopic)
+
+            -- Add-to-watchlist row: separate input fields from the
+            -- Queue Price Update fields above (inputItemName/inputPlat) -
+            -- see the v0.14.0 note on the watchlist locals for why those
+            -- aren't reused here.
+            imgui.SetNextItemWidth(180)
+            watchInputName = imgui.InputText("watch item", watchInputName)
             imgui.SameLine()
-            imgui.SetNextItemWidth(80)
-            alertThresholdPlat = imgui.InputInt("min gap (plat)", alertThresholdPlat)
-            if alertThresholdPlat < 0 then alertThresholdPlat = 0 end
+            imgui.SetNextItemWidth(90)
+            watchInputTarget = imgui.InputInt("target plat", watchInputTarget)
+            if watchInputTarget < 0 then watchInputTarget = 0 end
+            imgui.SameLine()
+            if imgui.Button("Add Watch") then
+                if watchInputName ~= "" then
+                    -- v0.14.0: replaces an existing entry for the same
+                    -- item name (case-sensitive match against r.name,
+                    -- same as everywhere else in this file) instead of
+                    -- appending a duplicate row - re-adding the same
+                    -- item just updates its target and clears any prior
+                    -- alerted-once state so the new target can fire
+                    -- fresh.
+                    local replaced = false
+                    for _, w in ipairs(watchlist) do
+                        if w.name == watchInputName then
+                            w.target = watchInputTarget
+                            replaced = true
+                            break
+                        end
+                    end
+                    if not replaced then
+                        table.insert(watchlist, { name = watchInputName, target = watchInputTarget })
+                    end
+                    watchAlerted[watchInputName] = nil
+                    watchInputName = ""
+                    watchInputTarget = 0
+                end
+            end
+
+            -- Watchlist display: name, target, a Remove button per row.
+            -- Iterates backwards so table.remove during the loop doesn't
+            -- skip the entry after a removed one.
+            if #watchlist > 0 then
+                imgui.Text("Watching:")
+                for i = #watchlist, 1, -1 do
+                    local w = watchlist[i]
+                    imgui.Text("  " .. w.name .. " <= " .. tostring(w.target) .. " plat")
+                    imgui.SameLine()
+                    if imgui.Button("Remove##watch" .. tostring(i)) then
+                        watchAlerted[w.name] = nil
+                        table.remove(watchlist, i)
+                    end
+                end
+            end
+
 
         -- v0.6.0: time-window toggles - which of frogtracker.biz's five
         -- history windows to pull/display. Read/write straight through to
@@ -890,19 +984,45 @@ for _, slot in ipairs(occupiedSlotsCache) do
                                                                                                     writeAuditLog(groupedResults, cheapestCount, undercutCount, noneCount, marketCount, errorCount)
                                                                                                     end
 
-                                                                                                    -- v0.13.0: same batch-finish transition as the audit log write
+                                                                                                    -- v0.14.0: same batch-finish transition as the audit log write
                                                                                                     -- above (fires exactly once per completed audit). Walks the
-                                                                                                    -- grouped results and fires one ntfy alert per UNDERCUT item
-                                                                                                    -- whose gap meets/exceeds alertThresholdPlat - CHEAPEST/MARKET/
-                                                                                                    -- no-competition/error rows don't qualify, only genuine
-                                                                                                    -- undercuts are actionable here.
+                                                                                                    -- WATCHLIST (not groupedResults - the watchlist is the small
+                                                                                                    -- user-picked set of items being tracked, groupedResults is
+                                                                                                    -- everything just audited) and looks up each watched item's
+                                                                                                    -- matching row by name. Fires when r.lowest is present and
+                                                                                                    -- has reached/dropped to/below the target - unlike the old
+                                                                                                    -- v0.13.0 gap check, this applies regardless of r.status
+                                                                                                    -- (MARKET/CHEAPEST/UNDERCUT all have a real r.lowest; only
+                                                                                                    -- no-competition/error rows lack one, guarded by the nil
+                                                                                                    -- check below). watchAlerted[name] gates it to firing once
+                                                                                                    -- per drop-below-target rather than every audit while it
+                                                                                                    -- stays low, and clears (re-arms) if the price rises back
+                                                                                                    -- above target, so a later re-drop notifies again. A
+                                                                                                    -- watched item not present in this audit's groupedResults
+                                                                                                    -- (wasn't included in the batch) is silently skipped - it
+                                                                                                    -- just waits for a future audit that does cover it.
                                                                                                     if alertsEnabled and batchWasRunning and not scanRunningNow then
-                                                                                                        for _, r in ipairs(groupedResults) do
-                                                                                                            if r.status == "undercut" and r.gap and r.gap >= alertThresholdPlat then
-                                                                                                                sendPriceAlert(r.name, r.yourPrice, r.lowest, r.gap)
-                                                                                                                end
-                                                                                                                end
-                                                                                                                end
+                                                                                                        for _, w in ipairs(watchlist) do
+                                                                                                            local matchRow = nil
+                                                                                                            for _, r in ipairs(groupedResults) do
+                                                                                                                if r.name == w.name then
+                                                                                                                    matchRow = r
+                                                                                                                    break
+                                                                                                                    end
+                                                                                                                    end
+                                                                                                                    if matchRow and matchRow.lowest then
+                                                                                                                        if matchRow.lowest <= w.target then
+                                                                                                                            if not watchAlerted[w.name] then
+                                                                                                                                sendPriceAlert(w.name, matchRow.lowest, w.target)
+                                                                                                                                watchAlerted[w.name] = true
+                                                                                                                                end
+                                                                                                                                else
+                                                                                                                                    watchAlerted[w.name] = nil
+                                                                                                                                    end
+                                                                                                                                    end
+                                                                                                                                    end
+                                                                                                                                    end
+
 
                                                                                                     -- v0.4.3: table rendering is untested against the live ImGui
                                                                                                     -- binding (no prior table usage anywhere in this file to
