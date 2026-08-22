@@ -31,6 +31,8 @@ As of v2.0.0, FrogSpy is a pure in-game Lua tool — no external Python step, no
    - **Batch Audit Selected** — refresh the list of occupied trader slots, check the ones you want, and audit them all in one pass. Results show in a color-coded, resizable table (red = undercut, green = cheapest/tied, gray = no competition, blue = market-only) with a **View** button per row that opens a per-seller breakdown of every competing auction for that item.
    - **Time-window toggles** — turn FrogTracker's 7-day/30-day/90-day/1-year/lifetime windows on or off individually; the results table adapts its columns accordingly.
    - **Audit Logging** — optionally append a timestamped record of every finished audit (character, summary counts, per-item detail) to a log file on disk, for a persistent history beyond what's on screen.
+   - **Watchlist & Price Alerts** — add an item and a target plat price; enable Price Alerts (with your ntfy.sh topic) and FrogSpy pushes a notification to your phone when the market price hits or drops below your target.
+   - **Auto-Audit Watchlist** — optionally have FrogSpy check one watched item per interval (default every 5 minutes) on its own, so watched prices still get checked while you're away from the panel.
 
 ## Important notes
 

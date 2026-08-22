@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2026-08-21
+
+### Added
+- Target-price watchlist with push notifications via [ntfy.sh](https://ntfy.sh) (frogspy.lua
+  v0.13.0 → v0.15.0). Add an item and a target plat price; FrogSpy alerts your phone when the
+  market price hits or drops below that target — no need to keep the panel open or manually
+  re-audit.
+  - **Watchlist UI** - add/replace entries by item name + target plat, remove individual rows
+  - **Price Alerts** - ntfy topic + enable toggle; reuses the same `io.popen` + `curl.exe`
+    transport already proven by the v0.12.0 auto-update checker, so no new dependency
+  - **Auto-Audit Watchlist** - optional timer (default every 5 min, configurable) that
+    round-robins one watchlist item per interval through `auditSingleItem()` so watched prices
+    get checked even while you're away from the panel; only fires when the FSM is idle, so it
+    can never race a manual audit
+  - Each watch re-arms after the price rises back above target, so a later re-drop notifies again
+    instead of firing once and going silent
+
+### Changed
+- v0.13.0 originally alerted on undercut *gap* (yours vs. lowest rival) rather than an absolute
+  target price. v0.14.0 replaced that with the watchlist model described above, since a plain
+  "notify me at N plat" target is what was actually wanted and doesn't require the item to be
+  undercut or even sitting in a trader slot.
+
 ## [2.1.0] - 2026-07-19
 
 ### Added
