@@ -1,9 +1,24 @@
 -- frogspy.lua
 -- ImGui control panel / tick-loop driver for frogspy_price_fsm.lua.
--- Version: 0.16.0
+-- Version: 0.17.0
 -- Author: Alektra <Lederhosen>
 --
 -- CHANGELOG:
+-- v0.17.0 - Two follow-up fixes from v0.16.0 feedback:
+--           1) The ntfy setup-help pop-up (Help##ntfy) rendered tall
+--           and narrow because a fresh ImGui Begin() auto-sizes to
+--           content, which starts at zero before the wrapped text
+--           lays out. Added SetNextWindowSize(520, 520,
+--           ImGuiCond.FirstUseEver) immediately before that Begin(),
+--           pcall-wrapped per this file's defensive-API convention
+--           since FirstUseEver wasn't used anywhere else yet.
+--           2) New "Platinum Only" toggle next to the Queue Price
+--           Update fields - hides the Gold/Silver/Copper inputs and
+--           the "Total: X cp" line, since prices are normally
+--           figured in whole Platinum and the copper subtotal was
+--           redundant clutter. Turning it on zeroes out any
+--           Gold/Silver/Copper already entered so a hidden leftover
+--           value can't silently inflate the total later.
 -- v0.16.0 - Four requested UI/UX fixes, no FSM changes:
 --           1) Hover tooltips added to every button except Audit Logging
 --           (already had one) and Close##competitors (self-evident,
@@ -136,7 +151,7 @@ local mq = require('mq')
 local imgui = require('ImGui')
 local fsm = require('frogspy_price_fsm')
 
-local VERSION = '0.16.0'  -- keep in sync with the header comment above
+local VERSION = '0.17.0'  -- keep in sync with the header comment above
 
 -- v0.12.0: Update check - fetches the raw script from GitHub on load and
 -- notifies (console only) if a newer VERSION is found. Same approach as
@@ -153,6 +168,15 @@ local inputPlat   = 0
 local inputGold   = 0
 local inputSilver = 0
 local inputCopper = 0
+
+-- v0.17.0: hides the Gold/Silver/Copper fields (and the derived
+-- copper-subtotal Text line) on the Queue Price Update panel, since
+-- prices are normally worked out in whole Platinum. The underlying
+-- inputGold/inputSilver/inputCopper values still exist and still
+-- feed totalCopper() while hidden - only the toggle button itself
+-- zeroes them (see where it's flipped on below), so nothing stale
+-- can silently ride along in the total.
+local platinumOnlyMode = false
 
 -- Auto-fill tracking: polls fsm.getSelectedSlot() on a timer (not every
 -- frame - 200 InvSlot checks per call adds up) and fills inputItemName
@@ -506,10 +530,21 @@ if not v then return "-" end
                                                                             -- Input Fields
                                                                             inputItemName = imgui.InputText("Item Name", inputItemName)
 
+                                                                            local platinumOnlyLabel = platinumOnlyMode and "Platinum Only: ON" or "Platinum Only: OFF"
+                                                                            if imgui.Button(platinumOnlyLabel) then
+                                                                                platinumOnlyMode = not platinumOnlyMode
+                                                                                if platinumOnlyMode then
+                                                                                    inputGold, inputSilver, inputCopper = 0, 0, 0
+                                                                                    end
+                                                                                    end
+                                                                                    tooltip("Hides the Gold/Silver/Copper fields and the copper subtotal below, since prices are usually figured in whole Platinum. Turning this on clears any Gold/Silver/Copper already entered so a hidden leftover value can't silently inflate the total.")
+
                                                                             inputPlat   = imgui.InputInt("Platinum", inputPlat)
+                                                                            if not platinumOnlyMode then
                                                                             inputGold   = imgui.InputInt("Gold", inputGold)
                                                                             inputSilver = imgui.InputInt("Silver", inputSilver)
                                                                             inputCopper = imgui.InputInt("Copper", inputCopper)
+                                                                            end
 
                                                                             -- InputInt's -/+ buttons (or manual typing) can go negative -
                                                                             -- clamp each denomination so a negative value can't corrupt the
@@ -519,7 +554,9 @@ if not v then return "-" end
                                                                                     if inputSilver < 0 then inputSilver = 0 end
                                                                                         if inputCopper < 0 then inputCopper = 0 end
 
+                                                                                            if not platinumOnlyMode then
                                                                                             imgui.Text("Total: " .. tostring(totalCopper()) .. " cp")
+                                                                                            end
 
                                                                                             -- Action Button
                                                                                             if imgui.Button("Queue Price Update") then
@@ -681,6 +718,18 @@ if imgui.Button(logLabel) then
                 -- imgui.Begin/openState pattern mirrors the main window's
                 -- own openGUI handling above.
                 if showNtfyHelp then
+                    -- v0.17.0: a fresh Begin() auto-sizes to content,
+                    -- which starts at zero width/height and collapses
+                    -- to a tall narrow column once TextWrapped starts
+                    -- wrapping. SetNextWindowSize + FirstUseEver gives
+                    -- it a sane starting size without fighting a later
+                    -- manual resize (FirstUseEver only applies when
+                    -- ImGui has no remembered size yet). pcall-wrapped
+                    -- per this file's defensive-API convention (see
+                    -- tableFlagsOk above) since FirstUseEver hasn't
+                    -- been used anywhere else in frogspy.lua yet.
+                    local ntfyCondOk, ntfyCond = pcall(function() return ImGuiCond.FirstUseEver end)
+                    imgui.SetNextWindowSize(520, 520, ntfyCondOk and ntfyCond or 0)
                     local ntfyHelpShouldDraw
                     showNtfyHelp, ntfyHelpShouldDraw = imgui.Begin("FrogSpy - ntfy Alert Setup Help", showNtfyHelp)
                     if ntfyHelpShouldDraw then
