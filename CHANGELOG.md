@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] - 2026-08-29
+
+### Added
+- Hover tooltips on every button across the panel (frogspy.lua v0.16.0) except Audit Logging
+  (already had one) and `Close##competitors` (self-evident, no side effects worth documenting).
+- Auto-Audit Watchlist interval now has synced minutes/hours/days fields instead of
+  minutes-only (v0.16.0) — all three read/write the same underlying interval, so you can set
+  "every 2 days" or "every 90 min" directly instead of converting to minutes by hand.
+- ntfy setup-help pop-up (v0.16.0) — new "Help##ntfy" button next to the ntfy topic field opens
+  a separate window walking through installing the ntfy app, picking a non-guessable topic,
+  subscribing, and wiring the topic into FrogSpy.
+- "Platinum Only" toggle (v0.17.0) on the Queue Price Update panel — hides the Gold/Silver/Copper
+  fields and the "Total: X cp" line, since prices are normally worked out in whole Platinum.
+  Turning it on zeroes out any Gold/Silver/Copper already entered so a hidden leftover value
+  can't silently inflate the total later.
+
+### Fixed
+- "target plat" watchlist field widened from 90px to 140px (v0.16.0) — 7-digit targets no
+  longer clip.
+- ntfy setup-help window (v0.17.0) opened tall and narrow since a fresh ImGui window auto-sizes
+  to content, which starts at zero before wrapped text lays out. Now opens at a fixed 520x520
+  via `SetNextWindowSize` + `ImGuiCond.FirstUseEver`.
+
 ## [2.2.0] - 2026-08-21
 
 ### Added
