@@ -1,9 +1,27 @@
 -- frogspy.lua
 -- ImGui control panel / tick-loop driver for frogspy_price_fsm.lua.
--- Version: 0.15.0
+-- Version: 0.16.0
 -- Author: Alektra <Lederhosen>
 --
 -- CHANGELOG:
+-- v0.16.0 - Four requested UI/UX fixes, no FSM changes:
+--           1) Hover tooltips added to every button except Audit Logging
+--           (already had one) and Close##competitors (self-evident,
+--           no side effects worth documenting). New shared tooltip()
+--           helper called right after each button's if/then/end,
+--           matching the existing Audit Logging tooltip's placement.
+--           2) Auto-Audit Watchlist interval now has synced
+--           minutes/hours/days fields instead of minutes-only - all
+--           three read/write the same underlying autoAuditIntervalSec;
+--           only the field actually edited that frame writes back, so
+--           the other two don't stomp it to 0 the same frame.
+--           3) "target plat" watchlist input widened from 90 to 140px
+--           to fit 7-digit targets without clipping.
+--           4) New "Help##ntfy" button next to the ntfy topic field
+--           opens a separate pop-up window (own Begin/End) walking
+--           through installing the ntfy app, picking a non-guessable
+--           topic, subscribing, and wiring the topic into FrogSpy -
+--           tracked by new showNtfyHelp local.
 -- v0.15.0 - NEW FEATURE: auto-audit timer for the v0.14.0 watchlist,
 --           closing the gap that made target-price watches mostly
 --           pointless - without this, a watched item's price was only
@@ -118,7 +136,7 @@ local mq = require('mq')
 local imgui = require('ImGui')
 local fsm = require('frogspy_price_fsm')
 
-local VERSION = '0.15.0'  -- keep in sync with the header comment above
+local VERSION = '0.16.0'  -- keep in sync with the header comment above
 
 -- v0.12.0: Update check - fetches the raw script from GitHub on load and
 -- notifies (console only) if a newer VERSION is found. Same approach as
@@ -220,6 +238,12 @@ local watchlist = {}
 local watchAlerted = {}
 local watchInputName = ""
 local watchInputTarget = 0
+
+-- v0.16.0: tracks whether the ntfy setup-help window is open. Separate
+-- top-level ImGui window (own Begin/End), not a tooltip, since the
+-- explanation is long enough to need scrolling/wrapping room a hover
+-- tooltip can't give.
+local showNtfyHelp = false
 
 -- v0.15.0: optional auto-audit timer, closing the actual gap the
 -- watchlist had until now - without this, a watched item's price is
@@ -345,6 +369,18 @@ if not v then return "-" end
         end
         return string.format("%.3f", v)
         end
+
+        -- v0.16.0: shared hover-tooltip helper. Must be called immediately
+        -- after the widget it documents (imgui.IsItemHovered() reads
+        -- whichever widget was drawn last) - every Button below in this
+        -- file calls this right after its own if/then/end, matching the
+        -- existing Audit Logging tooltip's placement rather than
+        -- introducing a second convention.
+        local function tooltip(text)
+        if imgui.IsItemHovered() then
+            imgui.SetTooltip(text)
+            end
+            end
 
         -- v0.4.6: collapses duplicate (item name, your price) pairs into one row
         -- with a count, instead of listing the same item once per slot. Only
@@ -505,6 +541,7 @@ if not v then return "-" end
                                                                                                         print('\ar[FrogSpy] Type an item name before clicking Queue Price Update.\ax')
                                                                                                         end
                                                                                                         end
+                                                                                                        tooltip("Sends the Item Name + Platinum/Gold/Silver/Copper above to the trader as a price update and clears the fields.")
 
                                                                                                         -- v0.1.10 feature, UNTESTED: searches BazaarSearchWnd for the
                                                                                                         -- lowest currently-listed price across all sellers and fills the
@@ -519,6 +556,7 @@ if not v then return "-" end
                                                                                                                         print('\ar[FrogSpy] Type an item name before searching.\ax')
                                                                                                                         end
                                                                                                                         end
+                                                                                                                        tooltip("Searches the Bazaar for the lowest currently-listed price on Item Name and fills the fields for review - does not queue anything by itself.")
 
                                                                                                                         if searchPending and fsm.isSearchDone() then
                                                                                                                             searchPending = false
@@ -551,6 +589,7 @@ if not v then return "-" end
                                                                                                                                                 print('\ar[FrogSpy] Type an item name before looking up FrogTracker price.\ax')
                                                                                                                                                 end
                                                                                                                                                 end
+                                                                                                                                                tooltip("Pulls FrogTracker.biz's 30-day median price for Item Name and fills the fields for review. Blocks briefly (up to ~1s) while it waits on the HTTP request.")
 
                                                                                                                                                 if ftPending and fsm.isFrogTrackerDone() then
                                                                                                                                                     ftPending = false
@@ -623,9 +662,53 @@ if imgui.Button(logLabel) then
         if imgui.Button(alertLabel) then
             alertsEnabled = not alertsEnabled
             end
+            tooltip("Turns ntfy.sh push notifications on/off for the watchlist below. Doesn't affect Audit Logging.")
             imgui.SameLine()
             imgui.SetNextItemWidth(140)
             alertTopic = imgui.InputText("ntfy topic", alertTopic)
+            imgui.SameLine()
+            if imgui.Button("Help##ntfy") then
+                showNtfyHelp = true
+                end
+                tooltip("Explains what ntfy is, how to get the app, and how the topic name below connects FrogSpy's alerts to your phone.")
+
+                -- v0.16.0: separate pop-up window walking a first-time user
+                -- through the whole ntfy.sh setup, since "ntfy topic" alone
+                -- gives no hint that ntfy is a third-party app that needs
+                -- installing first. Own Begin/End (not nested inside the
+                -- main panel's window) so it floats independently and can
+                -- be moved/closed without touching the main panel -
+                -- imgui.Begin/openState pattern mirrors the main window's
+                -- own openGUI handling above.
+                if showNtfyHelp then
+                    local ntfyHelpShouldDraw
+                    showNtfyHelp, ntfyHelpShouldDraw = imgui.Begin("FrogSpy - ntfy Alert Setup Help", showNtfyHelp)
+                    if ntfyHelpShouldDraw then
+                        imgui.TextWrapped("Price alerts in FrogSpy work by sending a push notification through ntfy.sh, a free, no-signup push notification service. FrogSpy does not send alerts directly to your phone - it publishes a message to an ntfy.sh 'topic', and only devices subscribed to that exact topic name receive it. Follow the steps below once, and every future price-drop alert from the watchlist will show up on your phone or desktop automatically.")
+                        imgui.Separator()
+                        imgui.TextWrapped("Step 1 - Install the ntfy app:")
+                        imgui.TextWrapped("On your phone, install the 'ntfy' app from the Apple App Store (iOS) or Google Play Store (Android). A desktop app and a plain web browser (https://ntfy.sh/) also work if you'd rather not install anything, though a phone notification is the most useful for an away-from-keyboard alert.")
+                        imgui.Separator()
+                        imgui.TextWrapped("Step 2 - Pick a topic name:")
+                        imgui.TextWrapped("A 'topic' is just a shared channel name - anyone who knows the exact name can publish to it or subscribe to it, and ntfy.sh's public server has no login or access control. Because of that, pick something long, random, and non-guessable (e.g. 'mattdeiter-frogspy-a91f7c') rather than something short like 'frogspy' - a guessable topic means a stranger could see your alerts, or spam you with their own.")
+                        imgui.Separator()
+                        imgui.TextWrapped("Step 3 - Subscribe in the app:")
+                        imgui.TextWrapped("Open the ntfy app, tap '+' / 'Subscribe to topic', and type the exact same topic name you're about to enter in the 'ntfy topic' field on the FrogSpy panel. Capitalization and spelling must match exactly - ntfy treats 'MyTopic' and 'mytopic' as two different topics.")
+                        imgui.Separator()
+                        imgui.TextWrapped("Step 4 - Enter the topic in FrogSpy and turn alerts on:")
+                        imgui.TextWrapped("Type that same topic name into the 'ntfy topic' field on the main panel, add at least one item to the watchlist below with a target plat price, then click 'Price Alerts: OFF' to turn it ON. When a watched item's market price drops to or below its target during an audit (manual or auto-audit), FrogSpy sends one push notification per drop - it won't repeat until the price rises back above target and drops again.")
+                        imgui.Separator()
+                        imgui.TextWrapped("Notes:")
+                        imgui.TextWrapped("- The topic field and this whole feature are optional - leaving 'Price Alerts' OFF means nothing is ever sent anywhere.")
+                        imgui.TextWrapped("- Because ntfy.sh's public server is unauthenticated, treat the topic name like a lightweight secret, not a password - random and unpublished is enough.")
+                        imgui.TextWrapped("- If notifications aren't arriving, double-check the topic name matches exactly on both ends, and that the ntfy app has notification permissions enabled on your phone.")
+                        imgui.Separator()
+                        if imgui.Button("Close##ntfyhelp") then
+                            showNtfyHelp = false
+                            end
+                            end
+                            imgui.End()
+                            end
 
             -- Add-to-watchlist row: separate input fields from the
             -- Queue Price Update fields above (inputItemName/inputPlat) -
@@ -634,7 +717,10 @@ if imgui.Button(logLabel) then
             imgui.SetNextItemWidth(180)
             watchInputName = imgui.InputText("watch item", watchInputName)
             imgui.SameLine()
-            imgui.SetNextItemWidth(90)
+            -- v0.16.0: widened from 90 to 140 - a target price needs room
+            -- for up to 7 digits (millions of plat on high-value items),
+            -- and the old width clipped anything past ~5 digits.
+            imgui.SetNextItemWidth(140)
             watchInputTarget = imgui.InputInt("target plat", watchInputTarget)
             if watchInputTarget < 0 then watchInputTarget = 0 end
             imgui.SameLine()
@@ -663,6 +749,7 @@ if imgui.Button(logLabel) then
                     watchInputTarget = 0
                 end
             end
+            tooltip("Adds 'watch item' to the watchlist below with 'target plat' as its alert threshold. Re-adding an existing item updates its target instead of duplicating the row.")
 
             -- Watchlist display: name, target, a Remove button per row.
             -- Iterates backwards so table.remove during the loop doesn't
@@ -677,6 +764,7 @@ if imgui.Button(logLabel) then
                         watchAlerted[w.name] = nil
                         table.remove(watchlist, i)
                     end
+                    tooltip("Removes " .. w.name .. " from the watchlist. It will no longer be checked or alerted on.")
                 end
             end
 
@@ -702,12 +790,41 @@ if imgui.Button(logLabel) then
                     lastAutoAuditMs = mq.gettime()
                 end
             end
+            tooltip("Turns the round-robin watchlist auto-audit on/off. When on, one watched item is re-checked every interval below without needing to click Batch Audit or Audit This Item.")
             imgui.SameLine()
+            -- v0.16.0: three synchronized views of the same underlying
+            -- autoAuditIntervalSec (minutes/hours/days), for when 5-min
+            -- granularity is too fine (checking once a day) or too coarse
+            -- (checking every couple minutes). Only the field the person
+            -- actually edited this frame writes back to
+            -- autoAuditIntervalSec - comparing each InputInt's return
+            -- against its own just-computed display value (rather than
+            -- unconditionally recomputing all three every frame, like the
+            -- old minutes-only version did) is what keeps the other two
+            -- fields from immediately stomping the edit back to 0 the
+            -- same frame. Minimum stays 60s (1 min) however it's set,
+            -- same floor as the original minutes-only field.
             local autoAuditMinutes = math.floor(autoAuditIntervalSec / 60)
+            local autoAuditHours   = math.floor(autoAuditIntervalSec / 3600)
+            local autoAuditDays    = math.floor(autoAuditIntervalSec / 86400)
             imgui.SetNextItemWidth(80)
-            autoAuditMinutes = imgui.InputInt("check every (min)", autoAuditMinutes)
-            if autoAuditMinutes < 1 then autoAuditMinutes = 1 end
-            autoAuditIntervalSec = autoAuditMinutes * 60
+            local newAutoAuditMinutes = imgui.InputInt("check every (min)", autoAuditMinutes)
+            imgui.SameLine()
+            imgui.SetNextItemWidth(80)
+            local newAutoAuditHours = imgui.InputInt("check every (hr)", autoAuditHours)
+            imgui.SameLine()
+            imgui.SetNextItemWidth(80)
+            local newAutoAuditDays = imgui.InputInt("check every (day)", autoAuditDays)
+            if newAutoAuditMinutes ~= autoAuditMinutes then
+                if newAutoAuditMinutes < 1 then newAutoAuditMinutes = 1 end
+                autoAuditIntervalSec = newAutoAuditMinutes * 60
+            elseif newAutoAuditHours ~= autoAuditHours then
+                if newAutoAuditHours < 1 then newAutoAuditHours = 1 end
+                autoAuditIntervalSec = newAutoAuditHours * 3600
+            elseif newAutoAuditDays ~= autoAuditDays then
+                if newAutoAuditDays < 1 then newAutoAuditDays = 1 end
+                autoAuditIntervalSec = newAutoAuditDays * 86400
+            end
 
 
         -- v0.6.0: time-window toggles - which of frogtracker.biz's five
@@ -728,6 +845,7 @@ for i, w in ipairs(WINDOWS) do
     if imgui.Button(wLabel .. "##window_" .. w.key) then
         fsm.setWindowEnabled(w.key, not enabled)
         end
+        tooltip("Toggles whether the " .. w.label .. " low/median columns are pulled from FrogTracker and shown in the results table.")
         if i < #WINDOWS then imgui.SameLine() end
             end
 
@@ -745,18 +863,21 @@ for i, w in ipairs(WINDOWS) do
                     if slotSelected[slot.row] == nil then slotSelected[slot.row] = false end
                         end
                         end
+                        tooltip("Re-scans your trader's occupied slots below. New slots default to unchecked - existing checkbox states are kept.")
                         imgui.SameLine()
                         if imgui.Button("Select All") then
                             if occupiedSlotsCache then
                                 for _, slot in ipairs(occupiedSlotsCache) do slotSelected[slot.row] = true end
                                     end
                                     end
+                                    tooltip("Checks every occupied slot in the list below, for a full-inventory Batch Audit Selected.")
                                     imgui.SameLine()
                                     if imgui.Button("Unselect All") then
                                         if occupiedSlotsCache then
                                             for _, slot in ipairs(occupiedSlotsCache) do slotSelected[slot.row] = false end
                                                 end
                                                 end
+                                                tooltip("Unchecks every slot in the list below.")
 
                                                 if not occupiedSlotsCache then
                                                     imgui.Text("Click Refresh List to load your trader's occupied slots.")
@@ -775,12 +896,14 @@ for i, w in ipairs(WINDOWS) do
                                                                 if imgui.Button("-##checklistRows") then
                                                                     checklistRows = math.max(3, checklistRows - 1)
                                                                     end
+                                                                    tooltip("Shows one fewer row in the slot checklist below (minimum 3).")
                                                                     imgui.SameLine()
                                                                     imgui.Text(tostring(checklistRows))
                                                                     imgui.SameLine()
                                                                     if imgui.Button("+##checklistRows") then
                                                                         checklistRows = math.min(60, checklistRows + 1)
                                                                         end
+                                                                        tooltip("Shows one more row in the slot checklist below (maximum 60).")
 
                                                                         -- v0.4.8 BUG FIX: v0.4.7's checkboxCompat() guessed at
                                                                         -- imgui.Checkbox's return signature - first the standard
@@ -808,6 +931,7 @@ for _, slot in ipairs(occupiedSlotsCache) do
         marker, slot.name, slot.row, slot.row)) then
         slotSelected[slot.row] = not slotSelected[slot.row]
         end
+        tooltip("Toggles whether slot " .. slot.row .. " (" .. slot.name .. ") is included in Batch Audit Selected.")
         end
         end
         local childOk = pcall(function()
@@ -874,6 +998,7 @@ for _, slot in ipairs(occupiedSlotsCache) do
                 if imgui.Button("Cancel Scan") then
                     fsm.reset()
                     end
+                    tooltip("Aborts the in-progress batch scan and resets the FSM to idle. Any items already audited this run are discarded.")
                     else
                         if imgui.Button("Batch Audit Selected") then
                             if not occupiedSlotsCache then
@@ -892,6 +1017,7 @@ for _, slot in ipairs(occupiedSlotsCache) do
                                                     end
                                                     end
                                                     end
+                                                    tooltip("Runs a full FrogTracker audit on every checked slot in the checklist above and fills the results table below.")
                                                     imgui.SameLine()
                                                     -- v0.4.5: single-item version - same undercut/cheapest check
                                                     -- as the full scan, but for just the item typed in the Item
@@ -912,6 +1038,7 @@ for _, slot in ipairs(occupiedSlotsCache) do
                                                                     print('\\ar[FrogSpy] Type an item name before auditing it.\\ax')
                                                                     end
                                                                     end
+                                                                    tooltip("Runs a single FrogTracker audit on the Item Name typed above, whether or not it's on the trader (falls back to a market-only lookup).")
                                                                     end
 
                                                                     local batchResults = fsm.getBatchScanResults()
@@ -1057,6 +1184,7 @@ if not tableFlagsOk then tableFlags = 0 end
                                     if imgui.Button("View##competitors" .. tostring(idx)) then
                                         selectedAuditItem = r
                                         end
+                                        tooltip("Shows the full list of competing seller auctions for " .. r.name .. " below the table.")
                                         for _, w in ipairs(WINDOWS) do
                                             if wcfg[w.key] then
                                                 imgui.TableNextColumn(); imgui.TextColored(rowColor, fmtPrice(r[w.low]))
@@ -1151,6 +1279,7 @@ end
                             if imgui.Button("Force FSM Reset") then
                                 fsm.reset()
                                 end
+                                tooltip("Resets the price-update/batch-audit FSM to idle. Use this if the panel seems stuck (e.g. 'Scanning...' that never finishes).")
                                 end
                                 imgui.End()
                                 end
