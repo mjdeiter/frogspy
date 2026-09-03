@@ -1,6 +1,6 @@
 -- frogspy.lua
 -- ImGui control panel / tick-loop driver for frogspy_price_fsm.lua.
--- Version: 0.17.0
+-- Version: 0.18.0
 -- Author: Alektra <Lederhosen>
 --
 -- CHANGELOG:
@@ -151,7 +151,7 @@ local mq = require('mq')
 local imgui = require('ImGui')
 local fsm = require('frogspy_price_fsm')
 
-local VERSION = '0.17.0'  -- keep in sync with the header comment above
+local VERSION = '0.18.0'  -- keep in sync with the header comment above
 
 -- v0.12.0: Update check - fetches the raw script from GitHub on load and
 -- notifies (console only) if a newer VERSION is found. Same approach as
@@ -360,19 +360,40 @@ end
 -- (settle + HTTP round-trip + throttle per item), so a few extra curl
 -- calls on a rare price-target hit don't meaningfully add to that.
 -- Silent no-op if alertsEnabled is off or alertTopic is blank, so
--- callers don't need to guard on those themselves.
+-- callers do not need to guard on those themselves.
+--
+-- v0.18.0: switched from the public ntfy.sh (unauthenticated, anyone who
+-- knows the topic can publish or subscribe) to a self-hosted ntfy server.
+-- Credentials are read from a local, non-committed config file (NOT this
+-- repo - it is public) at C:\Games\MacroQuest\Config\frogspy_ntfy.txt,
+-- 3 lines: topic (informational only - the live topic still comes from
+-- the "ntfy topic" UI field below), username, password.
+local ntfyUser, ntfyPass = nil, nil
+do
+    local credFile = io.open('C:\\Games\\MacroQuest\\Config\\frogspy_ntfy.txt', 'r')
+    if credFile then
+        credFile:read('l')
+        ntfyUser = credFile:read('l')
+        ntfyPass = credFile:read('l')
+        credFile:close()
+    end
+end
 local function sendPriceAlert(itemName, lowestPrice, targetPrice)
     if not alertsEnabled or not alertTopic or alertTopic == "" then return end
+    if not ntfyUser or not ntfyPass then
+        print('\ar[FrogSpy] Price alert skipped - missing or unreadable C:\\Games\\MacroQuest\\Config\\frogspy_ntfy.txt\ax')
+        return
+    end
     -- NOTE: formats inline with %.3f rather than calling fmtPrice() - that
     -- helper is declared further down this file (after checkForUpdate),
-    -- and as a local it isn't in scope yet up here. Trailing zeros in the
+    -- and as a local it is not in scope yet up here. Trailing zeros in the
     -- notification body are a cosmetic tradeoff for not restructuring the
     -- whole file's declaration order.
     local msg = string.format('%s hit target: %.3f plat (target was %.3f)',
         itemName, lowestPrice or 0, targetPrice or 0)
     local cmd = string.format(
-        'C:\\Windows\\System32\\curl.exe -s --connect-timeout 5 --max-time 8 -d "%s" "https://ntfy.sh/%s" 2>nul',
-        msg, alertTopic)
+        'C:\\Windows\\System32\\curl.exe -s --connect-timeout 5 --max-time 8 -u "%s:%s" -d "%s" "https://ntfy.matthewdeiter.com/%s" 2>nul',
+        ntfyUser, ntfyPass, msg, alertTopic)
     local ok, handle = pcall(io.popen, cmd)
     if not ok or not handle then
         print('\ar[FrogSpy] Price alert failed (io.popen): ' .. itemName .. '\ax')
@@ -480,7 +501,7 @@ if not v then return "-" end
                                                 f:write(string.format("  [%s] %s%s - your: %s  lowest: %s  gap: %s  rivals: %s\n",
                                                                       statusLabel, r.name, countLabel, fmtPrice(r.yourPrice), fmtPrice(r.lowest),
                                                                       r.gap and ("+" .. fmtPrice(r.gap)) or "-", tostring(r.rivals or 0)))
-                                                f:write("    " .. table.concat(windowParts, "  ") .. "\n")
+                                                f:write("   " .. table.concat(windowParts, "   ") .. "\n")
                                                 end
                                                 f:write("\n")
                                                 f:close()
@@ -592,7 +613,6 @@ if not v then return "-" end
                                                                                                                     else
                                                                                                                         print('\ar[FrogSpy] Type an item name before searching.\ax')
                                                                                                                         end
-                                                                                                                        end
                                                                                                                         tooltip("Searches the Bazaar for the lowest currently-listed price on Item Name and fills the fields for review - does not queue anything by itself.")
 
                                                                                                                         if searchPending and fsm.isSearchDone() then
@@ -623,7 +643,7 @@ if not v then return "-" end
                                                                                                                                             ftPending = true
                                                                                                                                             end
                                                                                                                                             else
-                                                                                                                                                print('\ar[FrogSpy] Type an item name before looking up FrogTracker price.\ax')
+                                                                                                                                               print('\ar[FrogSpy] Type an item name before looking up FrogTracker price.\ax')
                                                                                                                                                 end
                                                                                                                                                 end
                                                                                                                                                 tooltip("Pulls FrogTracker.biz's 30-day median price for Item Name and fills the fields for review. Blocks briefly (up to ~1s) while it waits on the HTTP request.")
@@ -733,24 +753,24 @@ if imgui.Button(logLabel) then
                     local ntfyHelpShouldDraw
                     showNtfyHelp, ntfyHelpShouldDraw = imgui.Begin("FrogSpy - ntfy Alert Setup Help", showNtfyHelp)
                     if ntfyHelpShouldDraw then
-                        imgui.TextWrapped("Price alerts in FrogSpy work by sending a push notification through ntfy.sh, a free, no-signup push notification service. FrogSpy does not send alerts directly to your phone - it publishes a message to an ntfy.sh 'topic', and only devices subscribed to that exact topic name receive it. Follow the steps below once, and every future price-drop alert from the watchlist will show up on your phone or desktop automatically.")
+                        imgui.TextWrapped("Price alerts in FrogSpy work by sending a push notification through ntfy, a lightweight push notification service. FrogSpy does not send alerts directly to your phone - it publishes a message to a private ntfy 'topic' on a self-hosted server, and only devices logged into that server and subscribed to that exact topic name receive it. Follow the steps below once, and every future price-drop alert from the watchlist will show up on your phone or desktop automatically.")
                         imgui.Separator()
                         imgui.TextWrapped("Step 1 - Install the ntfy app:")
-                        imgui.TextWrapped("On your phone, install the 'ntfy' app from the Apple App Store (iOS) or Google Play Store (Android). A desktop app and a plain web browser (https://ntfy.sh/) also work if you'd rather not install anything, though a phone notification is the most useful for an away-from-keyboard alert.")
+                        imgui.TextWrapped("On your phone, install the 'ntfy' app from the Apple App Store (iOS) or Google Play Store (Android).")
                         imgui.Separator()
                         imgui.TextWrapped("Step 2 - Pick a topic name:")
-                        imgui.TextWrapped("A 'topic' is just a shared channel name - anyone who knows the exact name can publish to it or subscribe to it, and ntfy.sh's public server has no login or access control. Because of that, pick something long, random, and non-guessable (e.g. 'mattdeiter-frogspy-a91f7c') rather than something short like 'frogspy' - a guessable topic means a stranger could see your alerts, or spam you with their own.")
+                        imgui.TextWrapped("A 'topic' is just a channel name. This server requires login, so an unauthenticated stranger cannot publish to or read it even if they guessed the name - but picking something non-guessable (e.g. 'mattdeiter-frogspy-a91f7c') is still good practice as a second layer.")
                         imgui.Separator()
                         imgui.TextWrapped("Step 3 - Subscribe in the app:")
-                        imgui.TextWrapped("Open the ntfy app, tap '+' / 'Subscribe to topic', and type the exact same topic name you're about to enter in the 'ntfy topic' field on the FrogSpy panel. Capitalization and spelling must match exactly - ntfy treats 'MyTopic' and 'mytopic' as two different topics.")
+                        imgui.TextWrapped("In the ntfy app, make sure the server is set to the self-hosted one (not the default ntfy.sh) and that you are logged in with the account already set up for it. Then tap '+' / 'Subscribe to topic', and type the exact same topic name you are about to enter in the 'ntfy topic' field on the FrogSpy panel. Capitalization and spelling must match exactly - ntfy treats 'MyTopic' and 'mytopic' as two different topics.")
                         imgui.Separator()
                         imgui.TextWrapped("Step 4 - Enter the topic in FrogSpy and turn alerts on:")
-                        imgui.TextWrapped("Type that same topic name into the 'ntfy topic' field on the main panel, add at least one item to the watchlist below with a target plat price, then click 'Price Alerts: OFF' to turn it ON. When a watched item's market price drops to or below its target during an audit (manual or auto-audit), FrogSpy sends one push notification per drop - it won't repeat until the price rises back above target and drops again.")
+                        imgui.TextWrapped("Type that same topic name into the 'ntfy topic' field on the main panel, add at least one item to the watchlist below with a target plat price, then click 'Price Alerts: OFF' to turn it ON. When a watched item's market price drops to or below its target during an audit (manual or auto-audit), FrogSpy sends one push notification per drop - it will not repeat until the price rises back above target and drops again.")
                         imgui.Separator()
                         imgui.TextWrapped("Notes:")
                         imgui.TextWrapped("- The topic field and this whole feature are optional - leaving 'Price Alerts' OFF means nothing is ever sent anywhere.")
-                        imgui.TextWrapped("- Because ntfy.sh's public server is unauthenticated, treat the topic name like a lightweight secret, not a password - random and unpublished is enough.")
-                        imgui.TextWrapped("- If notifications aren't arriving, double-check the topic name matches exactly on both ends, and that the ntfy app has notification permissions enabled on your phone.")
+                        imgui.TextWrapped("- Publishing (this game client sending an alert) uses credentials stored locally in C:\\Games\\MacroQuest\\Config\\frogspy_ntfy.txt, separate from your phone's login - if alerts stop arriving, check that file exists and that the FrogSpy console has not printed a 'missing or unreadable' warning.")
+                        imgui.TextWrapped("- If notifications are not arriving, double-check the topic name matches exactly on both ends, that the phone app's server is set correctly, and that the ntfy app has notification permissions enabled on your phone.")
                         imgui.Separator()
                         if imgui.Button("Close##ntfyhelp") then
                             showNtfyHelp = false
@@ -1065,7 +1085,6 @@ for _, slot in ipairs(occupiedSlotsCache) do
                                                     print('\\ar[FrogSpy] Could not start batch audit - FSM busy. Check console above.\\ax')
                                                     end
                                                     end
-                                                    end
                                                     tooltip("Runs a full FrogTracker audit on every checked slot in the checklist above and fills the results table below.")
                                                     imgui.SameLine()
                                                     -- v0.4.5: single-item version - same undercut/cheapest check
@@ -1146,7 +1165,6 @@ for _, slot in ipairs(occupiedSlotsCache) do
                                                                                                                                 end
                                                                                                                                 else
                                                                                                                                     watchAlerted[w.name] = nil
-                                                                                                                                    end
                                                                                                                                     end
                                                                                                                                     end
                                                                                                                                     end
@@ -1240,8 +1258,8 @@ if not tableFlagsOk then tableFlags = 0 end
                                                 imgui.TableNextColumn(); imgui.TextColored(rowColor, fmtPrice(r[w.med]))
                                                 end
                                                 end
-                                                end
-                                            imgui.EndTable()
+                                            end
+                                        imgui.EndTable()
                                         end
                                         end)
 
@@ -1264,7 +1282,7 @@ if not tableOk then
                         for _, w in ipairs(WINDOWS) do
                             table.insert(windowParts, string.format("%s %s/%s", w.label, fmtPrice(r[w.low]), fmtPrice(r[w.med])))
                             end
-                            imgui.TextColored(rowColor, "    windows: " .. table.concat(windowParts, "  "))
+                            imgui.TextColored(rowColor, "    windows: " .. table.concat(windowParts, "   "))
                             end
                             end
                             end
@@ -1343,4 +1361,4 @@ end
                                 while openGUI do
                                     fsm.tick()     -- Drive the FSM forward
                                     mq.delay(10)   -- Prevent CPU locking
-                                    end
+                                    end
